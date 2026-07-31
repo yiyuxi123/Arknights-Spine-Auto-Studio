@@ -233,12 +233,13 @@
       var loop = !!params.loop;
       var delta = typeof params.delta === 'number' ? params.delta : 1 / 30;
       var ts = typeof params.timeScale === 'number' && params.timeScale > 0 && isFinite(params.timeScale) ? params.timeScale : 1;
+      var restart = !!params.restart;
       var target = resolveView(params.view);
       if (!target) throw new Error('no skeleton loaded');
       var switched = target !== currentView;
       if (switched) { currentView = target; target.state.clearTracks(); }
       var requested = action;
-      if (action !== target._lastAction || ts !== target._lastScale || switched) {
+      if (action !== target._lastAction || ts !== target._lastScale || switched || restart) {
         if (!target.skeletonData.findAnimation(action)) {
           action = target.skeletonData.animations.length ? target.skeletonData.animations[0].name : null;
           if (!action) throw new Error('skeleton has no animations');

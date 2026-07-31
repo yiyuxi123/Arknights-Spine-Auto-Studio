@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { parseSkeleton } from './skel.mjs';
-import { choreograph, validateTimeline } from './choreograph.mjs';
+import { choreograph, validateTimeline, timelineTotal } from './choreograph.mjs';
 import { renderTimelineToGif } from './render.mjs';
 import { encodePng } from './png.mjs';
 import { loadManifest, findCharacter, downloadCharacter } from './download.mjs';
@@ -304,7 +304,7 @@ async function cmdRun(args) {
       baseURL: process.env.DEEPSEEK_BASE_URL,
     });
   }
-  console.log(`[choreograph] mode=${plan.mode} 角色=${plan.character} 总时长=${plan.timeline.reduce((s, x) => s + x.duration, 0).toFixed(2)}s`);
+  console.log(`[choreograph] mode=${plan.mode} 角色=${plan.character} 总时长=${timelineTotal(plan).toFixed(2)}s`);
   for (const seg of plan.timeline) {
     console.log(`  - ${seg.action.padEnd(10)} loop=${seg.loop} ${seg.duration.toFixed(2)}s x${seg.timeScale}  ${seg.description || ''}`.trim());
   }
@@ -453,14 +453,16 @@ async function cmdRun(args) {
 }
 
 // PNG frame export path (same browser pipeline, returns RGBA frames instead of GIF)
-import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession } from './cdp.mjs';
+import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession, rmrfRetry } from './cdp.mjs';
 import { decodePng } from './png.mjs';
 async function renderFramesToPng({ rootDir, assets, assetsList, timeline, width, height, fps, background = '00000000', mix = 0.2, chromePath, onFrame }) {
   const server = await startStaticServer(rootDir);
   const userDataDir = fs.mkdtempSync(path.join(await import('node:os').then((m) => m.tmpdir()), 'spine-studio-'));
   const chrome = launchChrome({ chromePath, userDataDir, width, height });
-  const cdp = new CdpClient(await chrome.wsUrl());
+
+  let cdp = null;
   try {
+    cdp = new CdpClient(await chrome.wsUrl());
     await cdp.open();
     const rel = (p) => '/' + String(p).replace(/\\/g, '/').replace(/^\/?/, '');
     const views = Array.isArray(assetsList) && assetsList.length
@@ -472,18 +474,25 @@ async function renderFramesToPng({ rootDir, assets, assetsList, timeline, width,
     const load = await evalJs(send, 'studio.load()');
     if (!load || !load.ok) throw new Error('studio.load failed: ' + (load && load.error));
     const segments = timeline.timeline;
-    const total = segments.reduce((sum, seg) => sum + seg.duration, 0);
+    const segDuration = (seg) => (seg.duration || 0) * Math.max(1, parseInt(seg.repeat, 10) || 1);
+    const total = segments.reduce((sum, seg) => sum + segDuration(seg), 0);
     const frameCount = Math.max(1, Math.round(total * fps));
     const out = [];
-    let segIndex = 0, segmentStart = 0;
+    let segIndex = 0, segmentStart = 0, lastCycle = -1;
     for (let f = 0; f < frameCount; f++) {
       const t = f / fps;
-      while (segIndex < segments.length - 1 && t >= segmentStart + segments[segIndex].duration) {
-        segmentStart += segments[segIndex].duration;
+      while (segIndex < segments.length - 1 && t >= segmentStart + segDuration(segments[segIndex])) {
+        segmentStart += segDuration(segments[segIndex]);
         segIndex++;
+        lastCycle = -1;
       }
       const seg = segments[segIndex];
-      await evalJs(send, `studio.step(${JSON.stringify({ action: seg.action, view: seg.view || 'default', loop: seg.loop, delta: 1 / fps, timeScale: seg.timeScale || 1 })})`);
+      const repeatN = Math.max(1, parseInt(seg.repeat, 10) || 1);
+      const cycleDur = seg.duration > 0 ? seg.duration : 1;
+      const cycle = Math.min(Math.floor((t - segmentStart) / cycleDur), repeatN - 1);
+      const restart = cycle !== lastCycle;
+      lastCycle = cycle;
+      await evalJs(send, `studio.step(${JSON.stringify({ action: seg.action, view: seg.view || 'default', loop: seg.loop, delta: 1 / fps, timeScale: seg.timeScale || 1, restart })})`);
       const dataUrl = await evalJs(send, 'studio.snapshot()');
       const dec = decodePng(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'));
       out.push(dec.rgba);
@@ -491,10 +500,10 @@ async function renderFramesToPng({ rootDir, assets, assetsList, timeline, width,
     }
     return out;
   } finally {
-    try { cdp.close(); } catch {}
+    try { cdp?.close?.(); } catch {}
     try { await chrome.close(); } catch {}
     try { await server.close(); } catch {}
-    try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}
+    await rmrfRetry(userDataDir);
   }
 }
 

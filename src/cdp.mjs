@@ -75,10 +75,33 @@ export function findChrome() {
   throw new Error('Chrome/Edge not found; set CHROME_PATH');
 }
 
-export function launchChrome({ chromePath = findChrome(), userDataDir, width = 800, height = 800, extraArgs = [] } = {}) {
-  const args = [
+function killTree(child) {
+  if (!child || !child.pid) return;
+  try { child.kill(); } catch {}
+  // Windows: kill the whole tree (launcher + browser children) so no zombie lingers
+  if (process.platform === 'win32') {
+    setTimeout(() => {
+      try {
+        spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      } catch {}
+    }, 800);
+  }
+}
+
+// Windows: 删除目录时 Chrome 进程可能仍抱有文件锁，重试几次直到成功
+export async function rmrfRetry(dir, tries = 6, delayMs = 600) {
+  if (!dir) return;
+  for (let i = 0; i < tries; i++) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); return; } catch { /* still locked */ }
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+}
+export function launchChrome({ chromePath = findChrome(), userDataDir, width = 800, height = 800, extraArgs = [], timeoutMs = 30000 } = {}) {
+  let child = null;
+  let stderr = '';
+  const makeArgs = (port) => [
     '--headless=new',
-    '--remote-debugging-port=0',
+    `--remote-debugging-port=${port}`,
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-extensions',
@@ -94,26 +117,68 @@ export function launchChrome({ chromePath = findChrome(), userDataDir, width = 8
     ...extraArgs,
     'about:blank',
   ];
-  const child = spawn(chromePath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-  let stderr = '';
-  child.stderr.on('data', (d) => {
-    stderr += d.toString();
-    const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
-    if (match && !child.wsUrl) {
-      child.wsUrl = match[1];
-      child.wsResolve?.(child.wsUrl);
-    }
-  });
-  child.wsUrlPromise = new Promise((resolve, reject) => {
-    child.wsResolve = resolve;
-    child.once('exit', (code) => reject(new Error(`Chrome exited early (code ${code}): ${stderr.slice(0, 500)}`)));
-    setTimeout(() => { if (!child.wsUrl) reject(new Error('Timed out waiting for DevTools endpoint')); }, 15000);
+  const wsUrlPromise = new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
+    const deadline = Date.now() + timeoutMs;
+
+    const attempt = (tryCount) => {
+      const port = 30000 + Math.floor(Math.random() * 20000);
+      let earlyError = null;
+      child = spawn(chromePath, makeArgs(port), { stdio: ['ignore', 'ignore', 'pipe'] });
+      child.stderr.on('data', (d) => {
+        stderr += d.toString();
+        const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
+        if (match && !settled) done(resolve, match[1]);
+      });
+      child.once('error', (err) => {
+        earlyError = new Error(`Failed to launch Chrome (${chromePath}): ${err.message}`);
+      });
+      child.once('exit', (code) => {
+        if (!earlyError && code !== 0) {
+          earlyError = new Error(`Chrome exited early (code ${code}): ${stderr.slice(-500)}`);
+        }
+      });
+      const poll = async () => {
+        if (settled) return;
+        if (earlyError) {
+          if (tryCount < 2 && Date.now() < deadline) {
+            setTimeout(() => attempt(tryCount + 1), 300);
+          } else {
+            done(reject, earlyError);
+          }
+          return;
+        }
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}/json/version`);
+          if (res.ok) {
+            const info = await res.json();
+            if (info && info.webSocketDebuggerUrl) {
+              done(resolve, info.webSocketDebuggerUrl);
+              return;
+            }
+          }
+        } catch { /* Chrome not ready yet; keep polling */ }
+        if (Date.now() > deadline) {
+          killTree(child);
+          done(reject, new Error(`Timed out waiting for DevTools endpoint (port ${port}): ${stderr.slice(-500)}`));
+          return;
+        }
+        setTimeout(poll, 200);
+      };
+      poll();
+    };
+    attempt(1);
   });
   return {
-    child,
-    wsUrl: () => child.wsUrlPromise,
+    get child() { return child; },
+    wsUrl: () => wsUrlPromise,
     close: async () => {
-      try { child.kill(); } catch {}
+      killTree(child);
       await new Promise((r) => setTimeout(r, 300));
     },
   };

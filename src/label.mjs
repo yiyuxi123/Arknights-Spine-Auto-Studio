@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession } from './cdp.mjs';
+import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession, rmrfRetry } from './cdp.mjs';
 
 const DEFAULT_VISION_MODEL = 'qwen-vl-max';
 const DEFAULT_VISION_BASE = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
@@ -68,8 +68,10 @@ export async function renderAllKeyframes({ rootDir, assets, animations, outDir, 
   const server = await startStaticServer(rootDir);
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spine-kf-'));
   const chrome = launchChrome({ chromePath, userDataDir, width, height });
-  const cdp = new CdpClient(await chrome.wsUrl());
+
+  let cdp = null;
   try {
+    cdp = new CdpClient(await chrome.wsUrl());
     await cdp.open();
     const base = String(rootDir).replace(/\\/g, '/').replace(/\/+$/, '');
     const rel = (p) => {
@@ -107,10 +109,10 @@ export async function renderAllKeyframes({ rootDir, assets, animations, outDir, 
     }
     return result;
   } finally {
-    try { cdp.close(); } catch {}
+    try { cdp?.close?.(); } catch {}
     try { await chrome.close(); } catch {}
     try { await server.close(); } catch {}
-    try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}
+    await rmrfRetry(userDataDir);
   }
 }
 
@@ -175,7 +177,8 @@ export async function labelActions({
 } = {}) {
   const anims = animations && animations.length ? animations : null;
   if (!anims) throw new Error('没有可标注的动作');
-  const frames = await renderAllKeyframes({ rootDir, assets, animations: anims, outDir: keyframesDir, chromePath, onLog });
+  // 无视觉 Key 时不需要关键帧（规则直接打标），省去 Chrome 渲染开销
+  const frames = visionKey ? await renderAllKeyframes({ rootDir, assets, animations: anims, outDir: keyframesDir, chromePath, onLog }) : null;
   const dict = {};
   const jobs = anims.map(async (a) => {
     const guess = guessLabel(a.name);

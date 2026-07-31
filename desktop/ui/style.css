@@ -415,23 +415,30 @@ footer {
 .ok-inline { color: var(--ok); font-size: 13px; font-weight: 600; }
 
 /* ---------- 动作预览 ---------- */
-.pv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(152px, 1fr)); gap: 12px; margin-top: 12px; }
+#pv-grid { display: block; margin-top: 12px; }
+.pv-group { margin-bottom: 26px; }
+.pv-group:last-child { margin-bottom: 0; }
+.pv-group-head { display: flex; align-items: baseline; gap: 10px; margin: 0 0 12px; padding-left: 10px; border-left: 3px solid var(--accent); font-size: 14px; }
+.pv-group-head b { color: var(--accent); letter-spacing: 0.5px; }
+.pv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(152px, 1fr)); gap: 12px; }
 .pv-card {
   position: relative; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
-  transition: all 0.18s ease; display: flex; flex-direction: column;
+  transition: all 0.18s ease; display: flex; flex-direction: column; height: 100%;
 }
 .pv-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-card); }
 .pv-card .pv-img { background: repeating-conic-gradient(#141a28 0 25%, #10151f 0 50%) 0 0 / 22px 22px; }
 .pv-card .pv-img img { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; display: block; }
 .pv-card .pv-name { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 10px 2px; font-size: 12.5px; }
+.pv-card .pv-name { min-width: 0; }
+.pv-card .pv-name b { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .pv-card .pv-desc { margin: 6px 10px 8px; font-size: 12px; padding: 6px 9px; }
 .pv-card .pv-tags {
   margin: 6px 10px 0; font-size: 11px; color: var(--violet); line-height: 1.5;
   background: rgba(167, 139, 250, 0.08); border: 1px solid rgba(167, 139, 250, 0.25);
-  border-radius: 8px; padding: 4px 8px; word-break: break-all;
+  border-radius: 8px; padding: 4px 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
-.pv-card .pv-add { margin: 0 10px 10px; }
+.pv-card .pv-add { margin: auto 10px 10px; }
 .pv-card.used { border-color: rgba(74, 222, 154, 0.55); box-shadow: 0 0 0 1px rgba(74, 222, 154, 0.3); }
 .pv-card.used .pv-img img { opacity: 0.72; }
 .pv-card.used .pv-add {

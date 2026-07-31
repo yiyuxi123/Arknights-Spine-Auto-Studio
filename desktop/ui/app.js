@@ -451,7 +451,7 @@ function updateGenTlState() {
   const el = $('#gen-tl-state');
   if (!el) return;
   if (q && q.length) {
-    const total = q.reduce((s, x) => s + (parseFloat(x.duration) || 0), 0);
+    const total = q.reduce((s, x) => s + (parseFloat(x.duration) || 0) * (parseInt(x.repeat, 10) || 1), 0);
     el.innerHTML = '时间轴：<b>' + q.length + ' 段 · ' + total.toFixed(2) + 's</b>（可回到「编排时间轴」继续修改）';
   } else {
     el.innerHTML = '时间轴：未编排 · <button class="ghost" id="btn-goto-tl" type="button">去「编排时间轴」</button>';
@@ -986,9 +986,11 @@ $('#btn-label').addEventListener('click', async () => {
   btn.disabled = true;
   $('#pv-info').textContent = '⏳ 正在识别动作含义（渲染关键帧 + ' + (state.vision?.key ? '千问视觉看图打标' : '离线规则猜测') + '）…';
   try {
-    const { jobId } = await api('/api/label', { skel: assets.skel, atlas: assets.atlas, png: assets.png, outName: m.name, modelId: m.id, characterName: m.name });
+        const mode = document.querySelector('input[name=pv-mode]:checked')?.value || 'anim';
+    const { jobId } = await api('/api/label', { skel: assets.skel, atlas: assets.atlas, png: assets.png, outName: m.name, modelId: m.id, characterName: m.name, mode });
     state.activeJob = jobId;
     const result = await waitJob(jobId);
+    if (result.files && result.files.length) state.previews = result.files;
     const labels = result.labels || {};
     for (const [name, info] of Object.entries(labels)) {
       if (!info || typeof info !== 'object') continue;
@@ -1017,49 +1019,52 @@ function renderPvGrid() {
     groups.get(v).push(p);
   }
   for (const [view, list] of groups) {
+    // 每个分类独立包裹：标题独占一行，卡片放进自己的 Grid，避免混排错位
+    const wrap = document.createElement('div');
+    wrap.className = 'pv-group';
     if (groups.size > 1) {
       const head = document.createElement('div');
       head.className = 'pv-group-head';
-      head.innerHTML = '<b>' + escapeHtml(view || 'default') + '</b><span class="muted">' + list.length + ' \u4e2a\u52a8\u4f5c</span>';
-      box.appendChild(head);
+      head.innerHTML = '<b>' + escapeHtml(view || 'default') + '</b><span class="muted">' + list.length + ' 个动作</span>';
+      wrap.appendChild(head);
     }
+    const grid = document.createElement('div');
+    grid.className = 'pv-grid';
     for (const p of list) {
-    const card = document.createElement('div');
-    card.className = 'pv-card' + (inQueue.has(p.name + '\u0000' + (p.view || '')) ? ' used' : '');
-    const desc = state.pvDesc[p.name] || '';
-    const isGif = p.kind === 'gif';
-    card.innerHTML =
-      '<div class="pv-img">' + (isGif
-        ? '<img src="' + p.url + '" alt="' + escapeHtml(p.name) + '" title="完整动画预览（循环播放）">'
-        : '<img src="' + p.url + '" loading="lazy" alt="' + escapeHtml(p.name) + '" title="单帧快照">') +
-      '</div>' +
-      '<div class="pv-name"><b>' + escapeHtml(p.name) + '</b><span class="muted">' + (p.duration > 0 ? p.duration.toFixed(2) + 's' : '瞬发') + (isGif ? ' · GIF' : '') + '</span></div>' +
-      (desc ? '<div class="pv-tags">' + escapeHtml(desc) + '</div>' : '') +
-      '<input class="pv-desc" type="text" placeholder="这个动作代表什么？（可选，可点 🤖 AI 自动标注）" value="' + escapeHtml(desc) + '">' +
-      '<button class="primary pv-add" type="button">＋ 加入时间轴</button>';
-    const descInput = card.querySelector('.pv-desc');
-    descInput.addEventListener('input', () => {
-      state.pvDesc[p.name] = descInput.value;
-      const seg = state.queue.find((s) => s.action === p.name);
-      if (seg) { seg.description = descInput.value; renderQueue(); }
-    });
-    card.querySelector('.pv-add').addEventListener('click', () => {
-      queueAdd(p.name, p.duration, descInput.value, p.view || '');
-      card.classList.add('used');
-    });
-    box.appendChild(card);
+      const card = document.createElement('div');
+      card.className = 'pv-card' + (inQueue.has(p.name + '\u0000' + (p.view || '')) ? ' used' : '');
+      const desc = state.pvDesc[p.name] || '';
+      const isGif = p.kind === 'gif';
+      card.innerHTML =
+        '<div class="pv-img">' + (isGif
+          ? '<img src="' + p.url + '" alt="' + escapeHtml(p.name) + '" title="完整动画预览（循环播放）">'
+          : '<img src="' + p.url + '" loading="lazy" alt="' + escapeHtml(p.name) + '" title="单帧快照">') +
+        '</div>' +
+        '<div class="pv-name"><b>' + escapeHtml(p.name) + '</b><span class="muted">' + (p.duration > 0 ? p.duration.toFixed(2) + 's' : '瞬发') + (isGif ? ' · GIF' : '') + '</span></div>' +
+        (desc ? '<div class="pv-tags" title="' + escapeHtml(desc) + '">' + escapeHtml(desc) + '</div>' : '') +
+        '<input class="pv-desc" type="text" placeholder="这个动作代表什么？（可选，可点 🤖 AI 自动标注）" value="' + escapeHtml(desc) + '">' +
+        '<button class="primary pv-add" type="button">＋ 加入时间轴</button>';
+      const descInput = card.querySelector('.pv-desc');
+      descInput.addEventListener('input', () => {
+        state.pvDesc[p.name] = descInput.value;
+        const seg = state.queue.find((s) => s.action === p.name);
+        if (seg) { seg.description = descInput.value; renderQueue(); }
+      });
+      card.querySelector('.pv-add').addEventListener('click', () => {
+        queueAdd(p.name, p.duration, descInput.value, p.view || '');
+        card.classList.add('used');
+      });
+      grid.appendChild(card);
     }
+    wrap.appendChild(grid);
+    box.appendChild(wrap);
   }
 }
-
-// ---------------------------------------------------------------------------
-// ③ 编排时间轴：队列 + PR 式可视化
-// ---------------------------------------------------------------------------
 function queueAdd(action, duration, description, view) {
   const existing = state.queue.find((s) => s.action === action && (s.view || '') === (view || ''));
   if (existing) { queueRemove(state.queue.indexOf(existing)); return; }
   const d = duration && duration > 0 ? Math.min(Math.max(duration, 0.5), 10) : 2;
-  state.queue.push({ action, view: view || '', loop: d >= 2, duration: d, timeScale: 1, description: description || '' });
+  state.queue.push({ action, view: view || '', loop: d >= 2, duration: d, timeScale: 1, repeat: 1, description: description || '' });
   renderQueue();
   if (typeof renderPvGrid === 'function') renderPvGrid();
 }
@@ -1089,17 +1094,17 @@ function renderQueue() {
     updateGenTlState();
     return;
   }
-  const total = q.reduce((s, x) => s + (parseFloat(x.duration) || 0), 0);
+  const total = q.reduce((s, x) => s + (parseFloat(x.duration) || 0) * (parseInt(x.repeat, 10) || 1), 0);
   const colors = ['#4094ff', '#00c882', '#b478ff', '#ff9f43', '#ff5c7a', '#2ec4b6', '#ffd166', '#8c94a0', '#6c5ce7', '#00b894'];
   bar.innerHTML = '';
   q.forEach((seg, i) => {
-    const w = Math.max(6, Math.round((parseFloat(seg.duration) || 0) / total * 100));
+    const w = Math.max(6, Math.round((parseFloat(seg.duration) || 0) * (parseInt(seg.repeat, 10) || 1) / total * 100));
     const blk = document.createElement('div');
     blk.className = 'tl-seg';
     blk.style.background = colors[i % colors.length];
     blk.style.width = w + '%';
-    blk.innerHTML = '<b>' + escapeHtml(seg.action) + '</b><span>' + (parseFloat(seg.duration) || 0).toFixed(1) + 's' + (seg.loop ? ' ⟳' : '') + '</span>';
-    blk.title = (seg.description || seg.action) + ' · ' + (parseFloat(seg.duration) || 0).toFixed(1) + 's';
+    blk.innerHTML = '<b>' + escapeHtml(seg.action) + '</b><span>' + (parseFloat(seg.duration) || 0).toFixed(1) + 's' + ((parseInt(seg.repeat, 10) || 1) > 1 ? ' ×' + (parseInt(seg.repeat, 10) || 1) : '') + (seg.loop ? ' ⟳' : '') + '</span>';
+    blk.title = (seg.description || seg.action) + ' · ' + (parseFloat(seg.duration) || 0).toFixed(1) + 's' + ((parseInt(seg.repeat, 10) || 1) > 1 ? ' ×' + (parseInt(seg.repeat, 10) || 1) : '') + ' 次' + (seg.loop ? ' 循环' : '');
     bar.appendChild(blk);
   });
   box.innerHTML = '';
@@ -1113,6 +1118,7 @@ function renderQueue() {
       <label>时长 <input type="number" min="0.1" step="0.1" value="${parseFloat(seg.duration) || 0}" class="tl-dur"></label>
       <label class="checkbox">循环 <input type="checkbox" ${seg.loop ? 'checked' : ''} class="tl-loop"></label>
       <label>倍速 <input type="number" min="0.1" step="0.1" value="${parseFloat(seg.timeScale) || 1}" class="tl-scale"></label>
+      <label>次数 <input type="number" min="1" max="99" step="1" value="${parseInt(seg.repeat) || 1}" class="tl-repeat"></label>
       ${tlViews.length > 1 ? '<label>视图 <select class="tl-view">' + tlViews.map((v) => '<option value="' + escapeHtml(v.view || 'default') + '"' + ((seg.view || '') === (v.view || '') ? ' selected' : '') + '>' + escapeHtml(v.view || 'default') + '</option>').join('') + '</select></label>' : ''}
       <input type="text" class="grow tl-desc" placeholder="含义（可选）" value="${escapeHtml(seg.description || '')}">
       <span class="tl-ops">
@@ -1124,6 +1130,7 @@ function renderQueue() {
       seg.duration = Math.max(0.1, parseFloat(row.querySelector('.tl-dur').value) || seg.duration);
       seg.loop = row.querySelector('.tl-loop').checked;
       seg.timeScale = Math.max(0.1, parseFloat(row.querySelector('.tl-scale').value) || seg.timeScale);
+      seg.repeat = Math.max(1, Math.round(parseFloat(row.querySelector('.tl-repeat').value)) || 1);
       const vs = row.querySelector('.tl-view');
       if (vs) seg.view = vs.value;
       seg.description = row.querySelector('.tl-desc').value;
@@ -1243,7 +1250,7 @@ $('#btn-run').addEventListener('click', async () => {
   state.lastTimeline = {
     character: state.current?.name || 'result',
     fps: parseInt($('#g-fps').value, 10) || 30,
-    timeline: state.queue.map((s) => ({ action: s.action, view: s.view || '', loop: !!s.loop, duration: Number(s.duration) || 2, timeScale: Number(s.timeScale) || 1, description: s.description || '' })),
+    timeline: state.queue.map((s) => ({ action: s.action, view: s.view || '', loop: !!s.loop, duration: Number(s.duration) || 2, timeScale: Number(s.timeScale) || 1, repeat: Math.max(1, Math.round(Number(s.repeat)) || 1), description: s.description || '' })),
     mode: 'edited',
   };
   body.timeline = state.lastTimeline;

@@ -251,11 +251,15 @@ export function validateTimeline(timeline, animations, animationsByView) {
     let timeScale = Number(segment.timeScale);
     if (!Number.isFinite(timeScale) || timeScale <= 0) timeScale = 1;
     timeScale = Math.min(10, Math.max(0.1, timeScale));
+    let repeat = parseInt(segment.repeat, 10);
+    if (!Number.isFinite(repeat) || repeat < 1) repeat = 1;
+    repeat = Math.min(99, repeat);
     const out = {
       action: resolved,
       loop,
       duration: Number.isFinite(duration) && duration > 0 ? duration : 2,
       timeScale,
+      repeat,
       description: typeof segment.description === 'string' ? segment.description : '',
     };
     if (view) out.view = view;
@@ -270,7 +274,7 @@ export function normalizeFps(value) {
 }
 
 export function timelineTotal(validated) {
-  return validated.timeline.reduce((sum, segment) => sum + segment.duration, 0);
+  return validated.timeline.reduce((sum, segment) => sum + segment.duration * (parseInt(segment.repeat, 10) || 1), 0);
 }
 
 export async function choreograph({ prompt, animations, character = 'unknown', fps = 30, mock = false, apiKey, model, baseURL, actionDescriptions }) {

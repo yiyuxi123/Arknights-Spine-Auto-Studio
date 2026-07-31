@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession } from './cdp.mjs';
+import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession, rmrfRetry } from './cdp.mjs';
 import { encodeGif } from './gif.mjs';
 import { decodePng } from './png.mjs';
 
@@ -29,8 +29,10 @@ export async function renderTimelineToGif({
   const server = await startStaticServer(rootDir);
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spine-studio-'));
   const chrome = launchChrome({ chromePath, userDataDir, width, height });
-  const cdp = new CdpClient(await chrome.wsUrl());
+
+  let cdp = null;
   try {
+    cdp = new CdpClient(await chrome.wsUrl());
     await cdp.open();
     const rel = (p) => '/' + String(p).replace(/\\/g, '/').replace(/^\/?/, '');
     const views = Array.isArray(assetsList) && assetsList.length
@@ -56,23 +58,31 @@ export async function renderTimelineToGif({
     }
 
     const segments = timeline.timeline;
-    const total = segments.reduce((sum, seg) => sum + seg.duration, 0);
+    const segDuration = (seg) => (seg.duration || 0) * Math.max(1, parseInt(seg.repeat, 10) || 1);
+    const total = segments.reduce((sum, seg) => sum + segDuration(seg), 0);
     const frameCount = Math.max(1, Math.round(total * fps));
     const rgbaFrames = [];
     let segIndex = 0;
     let segmentStart = 0;
+    let lastCycle = -1;
 
     for (let f = 0; f < frameCount; f++) {
       const t = f / fps;
-      while (segIndex < segments.length - 1 && t >= segmentStart + segments[segIndex].duration) {
-        segmentStart += segments[segIndex].duration;
+      while (segIndex < segments.length - 1 && t >= segmentStart + segDuration(segments[segIndex])) {
+        segmentStart += segDuration(segments[segIndex]);
         segIndex++;
+        lastCycle = -1;
       }
       const seg = segments[segIndex];
+      const repeatN = Math.max(1, parseInt(seg.repeat, 10) || 1);
+      const cycleDur = seg.duration > 0 ? seg.duration : 1;
+      const cycle = Math.min(Math.floor((t - segmentStart) / cycleDur), repeatN - 1);
+      const restart = cycle !== lastCycle;
+      lastCycle = cycle;
       const delta = 1 / fps; // 实时间，速率由 trackEntry.timeScale 应用
       const stepResult = await evalJs(
         send,
-        `studio.step(${JSON.stringify({ action: seg.action, view: seg.view || 'default', loop: seg.loop, delta, timeScale: seg.timeScale || 1 })})`,
+        `studio.step(${JSON.stringify({ action: seg.action, view: seg.view || 'default', loop: seg.loop, delta, timeScale: seg.timeScale || 1, restart })})`,
       );
       if (stepResult && stepResult.fallback) {
         console.warn(`  [warn] 动作 "${seg.action}" 不存在，已替换为 "${stepResult.action}"`);
@@ -91,9 +101,9 @@ export async function renderTimelineToGif({
     fs.writeFileSync(outFile, gif);
     return { frames: frameCount, seconds: total, fps, outFile, bytes: gif.length };
   } finally {
-    try { cdp.close(); } catch {}
+    try { cdp?.close?.(); } catch {}
     try { await chrome.close(); } catch {}
     try { await server.close(); } catch {}
-    try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}
+    await rmrfRetry(userDataDir);
   }
 }

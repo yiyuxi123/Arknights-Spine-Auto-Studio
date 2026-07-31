@@ -7,6 +7,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import util from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -15,6 +16,7 @@ import { parseSkeleton } from '../src/skel.mjs';
 import { resolveModelRef, fetchCharacterFromPrts, fetchAllViewsFromPrts, enemyIndex } from '../src/prts.mjs';
 import { alignAssetsInPlace } from '../src/align.mjs';
 import { PerfMonitor } from '../src/perf.mjs';
+import { rmrfRetry } from '../src/cdp.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
@@ -731,14 +733,14 @@ async function handleApi(req, res, url) {
       }
     }
     const jobId = enqueue('preview', async () => {
-      const { renderActionPreviews } = await import('../src/preview.mjs');
+        const { renderActionPreviews } = await import('../src/preview.mjs');
       const tag = safeName(body.outName || 'model') + '-' + Date.now();
       const pvDir = path.join(outDir, '.previews', tag);
       const itemsAll = [];
       for (const v of views) {
         const vDir = path.join(pvDir, safeName(v.view || 'default'));
         const items = await renderActionPreviews({
-          rootDir: root,
+        rootDir: root,
           assets: { skel: v.skel, atlas: v.atlas, png: v.png },
           outDir: vDir,
           mode: body.mode === 'frame' ? 'frame' : 'anim',
@@ -881,26 +883,51 @@ async function handleApi(req, res, url) {
       return sendJson(res, 400, { ok: false, error: '模型三件套不完整，请先拉取模型' });
     }
     const modelId = (modelFromKey(String(body.modelId || '')) || {}).groupId || String(body.modelId || '');
+    const previewMode = body.mode === 'frame' ? 'frame' : 'anim';
     const jobId = enqueue('label', async () => {
-      const cfg = applyConfig();
-      const { labelActions, saveDictionary } = await import('../src/label.mjs');
-      const animations = parseSkeleton(new Uint8Array(fs.readFileSync(skel))).animations.map((a) => ({ name: a.name, duration: a.duration }));
-      const kfDir = path.join(outDir, '.previews', safeName(body.outName || modelId || 'model') + '-kf-' + Date.now());
-      const dict = await labelActions({
-        rootDir: root,
-        assets: { skel, atlas, png },
-        animations,
-        keyframesDir: kfDir,
-        visionKey: cfg.visionKey,
-        visionModel: cfg.visionModel,
-        visionBaseURL: cfg.visionBaseURL,
-        chromePath: chromeCandidates(),
-        onLog: (m) => console.log(m),
-      });
-      dict.character = String(body.characterName || body.outName || modelId || '角色');
-      let dictFile = null;
-      if (modelId) dictFile = saveDictionary(modelId, assetsDir, dict);
-      return { labels: dict.animations, dictFile, mode: dict.mode };
+      let kfDir = null;
+      try {
+        const cfg = applyConfig();
+        const { labelActions, saveDictionary } = await import('../src/label.mjs');
+        const { renderActionPreviews } = await import('../src/preview.mjs');
+        const animations = parseSkeleton(new Uint8Array(fs.readFileSync(skel))).animations.map((a) => ({ name: a.name, duration: a.duration }));
+        // 视觉打标的关键帧写入系统临时目录，不污染输出目录，任务结束后自动清理
+        kfDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spine-kf-'));
+        const pvDir = path.join(outDir, '.previews', safeName(body.outName || modelId || 'model') + '-' + Date.now());
+        const dict = await labelActions({
+          rootDir: root,
+          assets: { skel, atlas, png },
+          animations,
+          keyframesDir: kfDir,
+          visionKey: cfg.visionKey,
+          visionModel: cfg.visionModel,
+          visionBaseURL: cfg.visionBaseURL,
+          chromePath: chromeCandidates(),
+          onLog: (m) => console.log(m),
+        });
+        dict.character = String(body.characterName || body.outName || modelId || '角色');
+        let dictFile = null;
+        if (modelId) dictFile = saveDictionary(modelId, assetsDir, dict);
+        // 生成可观看的动作预览（GIF 动画或单帧 PNG），供打标界面直接展示
+        const items = await renderActionPreviews({
+          rootDir: root,
+          assets: { skel, atlas, png },
+          outDir: pvDir,
+          mode: previewMode,
+          chromePath: chromeCandidates(),
+          onLog: (m) => console.log(m),
+        });
+        const files = items.map((it) => ({
+          name: it.name,
+          duration: it.duration,
+          kind: it.kind,
+          view: String(body.view || ''),
+          url: '/outputs/.previews/' + safeName(path.basename(pvDir)) + '/' + encodeURIComponent(path.basename(it.file)),
+        }));
+        return { labels: dict.animations, dictFile, mode: dict.mode, files };
+      } finally {
+        if (kfDir) await rmrfRetry(kfDir);
+      }
     });
     sendJson(res, 202, { ok: true, jobId });
     return;

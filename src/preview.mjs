@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession } from './cdp.mjs';
+import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession, rmrfRetry } from './cdp.mjs';
 import { encodeGif } from './gif.mjs';
 import { decodePng } from './png.mjs';
 
@@ -39,8 +39,10 @@ export async function renderActionPreviews({
   const server = await startStaticServer(rootDir);
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spine-preview-'));
   const chrome = launchChrome({ chromePath, userDataDir, width, height });
-  const cdp = new CdpClient(await chrome.wsUrl());
+
+  let cdp = null;
   try {
+    cdp = new CdpClient(await chrome.wsUrl());
     await cdp.open();
     const base = String(rootDir).replace(/\\/g, '/').replace(/\/+$/, '');
     const rel = (p) => {
@@ -97,10 +99,10 @@ export async function renderActionPreviews({
     }
     return items;
   } finally {
-    try { cdp.close(); } catch {}
+    try { cdp?.close?.(); } catch {}
     try { await chrome.close(); } catch {}
     try { await server.close(); } catch {}
-    try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}
+    await rmrfRetry(userDataDir);
   }
 }
 
@@ -120,8 +122,10 @@ export async function renderKeyframes({
   const server = await startStaticServer(rootDir);
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spine-kf-'));
   const chrome = launchChrome({ chromePath, userDataDir, width, height });
-  const cdp = new CdpClient(await chrome.wsUrl());
+
+  let cdp = null;
   try {
+    cdp = new CdpClient(await chrome.wsUrl());
     await cdp.open();
     const base = String(rootDir).replace(/\\/g, '/').replace(/\/+$/, '');
     const rel = (p) => {
@@ -159,9 +163,9 @@ export async function renderKeyframes({
     onLog('[keyframes] ' + action + ' -> ' + files.length + ' 帧');
     return files;
   } finally {
-    try { cdp.close(); } catch {}
+    try { cdp?.close?.(); } catch {}
     try { await chrome.close(); } catch {}
     try { await server.close(); } catch {}
-    try { fs.rmSync(userDataDir, { recursive: true, force: true }); } catch {}
+    await rmrfRetry(userDataDir);
   }
 }
