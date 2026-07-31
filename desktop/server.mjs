@@ -13,6 +13,7 @@ import { spawn } from 'node:child_process';
 import { main } from '../src/pipeline.mjs';
 import { parseSkeleton } from '../src/skel.mjs';
 import { resolveModelRef, fetchCharacterFromPrts } from '../src/prts.mjs';
+import { alignAssetsInPlace } from '../src/align.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
@@ -301,7 +302,7 @@ async function handleApi(req, res, url) {
   }
   if ((req.method === 'POST' || req.method === 'GET') && pathname === '/api/config/test') {
     const cfg = loadConfig();
-    if (!cfg.apiKey) return sendError(res, new Error('尚未配置 API Key'));
+    if (!cfg.apiKey) return sendJson(res, 200, { ok: false, error: '尚未配置 API Key，请先在设置中填入 Key（或使用离线编排）' });
     try {
       const resp = await fetch(`${cfg.baseURL.replace(/\/+$/, '')}/models`, {
         headers: { Authorization: `Bearer ${cfg.apiKey}` },
@@ -566,7 +567,28 @@ server.on('error', (err) => {
   throw err;
 });
 
+function repairAllAssets() {
+  let dirs = [];
+  try { dirs = fs.readdirSync(assetsDir).filter((d) => { try { return fs.statSync(path.join(assetsDir, d)).isDirectory(); } catch { return false; } }); } catch { return; }
+  for (const dir of dirs) {
+    const base = path.join(assetsDir, dir);
+    let files = [];
+    try { files = fs.readdirSync(base); } catch { continue; }
+    const atlasName = files.find((f) => f.endsWith('.atlas'));
+    const png =
+      (atlasName && files.find((f) => f.endsWith('.png') && path.basename(f, '.png') === path.basename(atlasName, '.atlas'))) ||
+      files.find((f) => f.endsWith('.png'));
+    if (!atlasName || !png) continue;
+    try {
+      alignAssetsInPlace({ atlasPath: path.join(base, atlasName), pngPath: path.join(base, png), onLog: (m) => console.log(m) });
+    } catch (err) {
+      console.log('[align] 跳过 ' + dir + ': ' + err.message);
+    }
+  }
+}
+
 server.listen(PORT, HOST, () => {
+  repairAllAssets();
   console.log(`[desktop] Arknights Spine Auto-Studio 桌面服务已启动: http://${HOST}:${PORT}/ui/`);
   console.log(`[desktop] 输出目录: ${outDir}`);
 });

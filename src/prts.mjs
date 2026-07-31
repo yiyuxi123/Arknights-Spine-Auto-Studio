@@ -266,7 +266,19 @@ export async function fetchCharacterFromPrts({ character, key, enemy, skin, view
   }
 
   // 校验 skel 版本兼容（Spine 3.8 播放器）
-  const { parseSkeleton } = await import('./skel.mjs');
+    // 对齐 atlas 声明尺寸与实际 PNG 尺寸（PRTS 常把贴图降采样到 2/3，不修复会渲染散架）
+  try {
+    const { alignAssetsInPlace } = await import('./align.mjs');
+    const pngPath = join(targetDir, pages[0]);
+    const align = alignAssetsInPlace({ atlasPath: files.atlas, pngPath, onLog });
+    if (align.aligned) {
+      if (onLog) onLog(`[prts] 自动对齐贴图：${align.action} ${align.from} -> ${align.to}`);
+    }
+  } catch (alignErr) {
+    if (onLog) onLog(`[align] 跳过对齐：${alignErr.message}`);
+  }
+
+const { parseSkeleton } = await import('./skel.mjs');
   const skelBytes = new Uint8Array(await readFile(files.skel));
   const version = parseSkeleton(skelBytes).version ?? '';
   if (!version.startsWith('3.8')) {

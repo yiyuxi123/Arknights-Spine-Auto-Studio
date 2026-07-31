@@ -150,6 +150,11 @@ async function cmdUpscale(args) {
   const outDir = args.out
     ? path.resolve(args.out)
     : path.join(path.dirname(pngPath), path.basename(pngPath, path.extname(pngPath)) + '-hi');
+  // 先对齐 atlas 声明尺寸与实际 PNG 尺寸，避免高清化在错误基准上叠加
+  {
+    const { alignAssetsInPlace } = await import('./align.mjs');
+    try { alignAssetsInPlace({ atlasPath, pngPath, onLog: (m) => console.log(m) }); } catch (e) { console.log('[align] 跳过对齐: ' + e.message); }
+  }
   let srHandle = null;
   if (args.sr || args['sr-engine']) {
     const { resolveEngine } = await import('./sr.mjs');
@@ -240,6 +245,11 @@ async function cmdRun(args) {
   const format = String(args.format || 'gif').toLowerCase();
 
   const assets = await resolveAssets(args);
+  // 对齐 atlas 声明尺寸与实际 PNG 尺寸（PRTS 贴图可能被降采样，不修复会渲染散架）
+  {
+    const { alignAssetsInPlace } = await import('./align.mjs');
+    try { alignAssetsInPlace({ atlasPath: assets.atlas, pngPath: assets.png, onLog: (m) => console.log(m) }); } catch (e) { console.log('[align] 跳过对齐: ' + e.message); }
+  }
   const skeleton = parseSkeleton(new Uint8Array(fs.readFileSync(assets.skel)));
   const animations = skeleton.animations.map((a) => ({ name: a.name, duration: a.duration }));
 

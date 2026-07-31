@@ -188,17 +188,18 @@ export async function newPageSession(cdp, url) {
   await cdp.send('Page.enable', {}, sessionId);
   await cdp.send('Runtime.enable', {}, sessionId);
   await cdp.send('Page.navigate', { url }, sessionId);
-  // wait for load event
+  // wait for the real page: readyState complete AND navigated away from about:blank
+  const hrefPrefix = new URL(url).origin + new URL(url).pathname;
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     const ready = await evalJs(
       (m, p) => cdp.send(m, p, sessionId),
-      'document.readyState === "complete" || document.readyState === "interactive"',
+      'document.readyState === "complete" && location.href.startsWith(' + JSON.stringify(hrefPrefix) + ')',
     ).catch(() => false);
     if (ready) break;
     await new Promise((r) => setTimeout(r, 100));
   }
   // small settle delay for scripts executed at load
-  await new Promise((r) => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, 300));
   return { targetId, sessionId };
 }

@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { decodePng, encodePng } from '../src/png.mjs';
 import { resizeRgba } from '../src/upscale.mjs';
+import { atlasPageSize } from '../src/align.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -53,7 +54,7 @@ function readRegionRect(atlasText, regionName) {
   if (!block.xy || !block.size) throw new Error(`区域 ${regionName} 缺少 xy/size`);
   const xy = block.xy.split(',').map((v) => parseInt(v, 10));
   const size = block.size.split(',').map((v) => parseInt(v, 10));
-  return { x: xy[0], y: xy[1], w: size[0], h: size[1] };
+  return { x: xy[0], y: xy[1], w: size[0], h: size[1], rotate: block.rotate === 'true' };
 }
 
 // 自动挑选对比区域：优先名字含 face/head/头/脸 的区域，否则取面积最大的区域。
@@ -76,7 +77,7 @@ function pickRegion(atlasText) {
     if (block.xy && block.size) {
       const xy = block.xy.split(',').map((v) => parseInt(v, 10));
       const size = block.size.split(',').map((v) => parseInt(v, 10));
-      regions.push({ name: t, x: xy[0], y: xy[1], w: size[0], h: size[1] });
+      regions.push({ name: t, x: xy[0], y: xy[1], w: size[0], h: size[1], rotate: block.rotate === 'true' });
     }
     i = j - 1;
   }
@@ -92,6 +93,18 @@ function cropRgba(rgba, W, x0, y0, w, h) {
     for (let x = 0; x < w; x++) {
       const si = ((y0 + y) * W + (x0 + x)) * 4;
       const di = (y * w + x) * 4;
+      out[di] = rgba[si]; out[di + 1] = rgba[si + 1]; out[di + 2] = rgba[si + 2]; out[di + 3] = rgba[si + 3];
+    }
+  }
+  return out;
+}
+
+function rotateCCW(rgba, w, h) {
+  const out = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const si = (y * w + x) * 4;
+      const di = (x * h + (h - 1 - y)) * 4;
       out[di] = rgba[si]; out[di + 1] = rgba[si + 1]; out[di + 2] = rgba[si + 2]; out[di + 3] = rgba[si + 3];
     }
   }
@@ -183,28 +196,65 @@ export async function main(argv = process.argv.slice(2)) {
   const orig = decodePng(fs.readFileSync(pngPath));
   const atlasText = fs.readFileSync(atlasPath, 'utf8');
 
-  let rect;
+  // 默认区域（F_Face）有时只是小配件：优先采用名称命中 face/head/头/脸 且面积更大的区域
+  let rect = null;
+  let preferred = null;
+  try { preferred = pickRegion(atlasText); } catch { /* 空 atlas 由下方统一报错 */ }
   try {
-    rect = readRegionRect(atlasText, regionName);
+    const named = readRegionRect(atlasText, regionName);
+    if (
+      preferred &&
+      preferred.name !== regionName &&
+      /face|head|头|脸/i.test(preferred.name) &&
+      preferred.w * preferred.h > named.w * named.h
+    ) {
+      console.log('[compare] ' + regionName + ' 面积偏小（可能是配件），改用 ' + preferred.name + ' ' + preferred.w + 'x' + preferred.h);
+      rect = preferred;
+    } else {
+      rect = named;
+    }
   } catch {
-    const picked = pickRegion(atlasText);
-    console.log(`[compare] 未找到 ${regionName}，自动选择区域 ${picked.name}@(${picked.x},${picked.y}) ${picked.w}x${picked.h}`);
-    rect = picked;
+    if (preferred) {
+      console.log('[compare] 未找到 ' + regionName + '，自动选择区域 ' + preferred.name + '@(' + preferred.x + ',' + preferred.y + ') ' + preferred.w + 'x' + preferred.h);
+      rect = preferred;
+    }
+  }
+  if (!rect) throw new Error('atlas 中未解析到任何区域');
+
+  // PRTS 贴图可能被降采样（如 368x368 vs atlas 548x548）：按 PNG 实际尺寸换算坐标，
+  // 避免裁切越界/错位产生黑条。换算后再裁切，四个方案始终基于同一区域。
+  try {
+    const a = atlasPageSize(atlasText);
+    const coordScale = Math.max(orig.width / a.width, orig.height / a.height);
+    if (Math.abs(coordScale - 1) > 0.001) {
+      console.log(`[compare] PNG ${orig.width}x${orig.height} 与 atlas ${a.width}x${a.height} 不匹配，区域坐标已按 x${coordScale.toFixed(3)} 换算`);
+      rect = { x: Math.round(rect.x * coordScale), y: Math.round(rect.y * coordScale), w: Math.round(rect.w * coordScale), h: Math.round(rect.h * coordScale) };
+    }
+  } catch { /* 解析失败时按 1:1 处理 */ }
+
+    // rotate:true 的区域在贴图里是旋转存放的：先裁出 (h x w) 块，再逆时针旋转回正
+  let work = { rgba: orig.rgba, width: orig.width, height: orig.height };
+  if (rect.rotate) {
+    const block = cropRgba(orig.rgba, orig.width, rect.x, rect.y, rect.h, rect.w);
+    const upright = rotateCCW(block, rect.h, rect.w);
+    work = { rgba: upright, width: rect.w, height: rect.h };
+    rect = { x: 0, y: 0, w: rect.w, h: rect.h, rotate: false };
+    console.log('[compare] rotate=true 区域已旋转回正 (' + work.width + 'x' + work.height + ')');
   }
 
-  const C = Math.min(128, orig.width, orig.height);
-  const cx = Math.max(0, Math.min(orig.width - C, rect.x + Math.max(0, ((rect.w - C) / 2) | 0)));
-  const cy = Math.max(0, Math.min(orig.height - C, rect.y + Math.max(0, ((rect.h - C) / 2) | 0)));
-  console.log(`[compare] 区域 ${regionName}@(${rect.x},${rect.y}) -> 裁切 (${cx},${cy}) x${C}`);
+  const C = Math.min(128, work.width, work.height);
+  const cx = Math.max(0, Math.min(work.width - C, rect.x + Math.max(0, ((rect.w - C) / 2) | 0)));
+  const cy = Math.max(0, Math.min(work.height - C, rect.y + Math.max(0, ((rect.h - C) / 2) | 0)));
+  console.log('[compare] 区域 ' + regionName + '@(' + rect.x + ',' + rect.y + ') -> 裁切 (' + cx + ',' + cy + ') x' + C);
 
   const P = C * scale;
   const panels = [];
   const labels = [];
-  panels.push(nearestUp(cropRgba(orig.rgba, orig.width, cx, cy, C, C), C, C, scale));
-  labels.push({ text: `1. 原图 (nearest)`, x: 16, y: BAR_H + 8 });
+  panels.push(nearestUp(cropRgba(work.rgba, work.width, cx, cy, C, C), C, C, scale));
+  labels.push({ text: '1. 原图 (nearest)', x: 16, y: BAR_H + 8 });
 
-  const lanczosFull = resizeRgba(orig.rgba, orig.width, orig.height, orig.width * scale, orig.height * scale);
-  panels.push(cropRgba(lanczosFull, orig.width * scale, cx * scale, cy * scale, P, P));
+  const lanczosFull = resizeRgba(work.rgba, work.width, work.height, work.width * scale, work.height * scale);
+  panels.push(cropRgba(lanczosFull, work.width * scale, cx * scale, cy * scale, P, P));
   labels.push({ text: `2. Lanczos3 x${scale}`, x: P + 16, y: BAR_H + 8 });
 
   const { resolveEngine } = await import('../src/sr.mjs');

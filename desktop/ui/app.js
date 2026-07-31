@@ -140,7 +140,7 @@ $('#btn-cfg-test').addEventListener('click', async () => {
   try {
     await api('/api/config', { apiKey: $('#cfg-key').value || undefined, model: $('#cfg-model').value, baseURL: $('#cfg-baseurl').value });
     const r = await api('/api/config/test', {});
-    st.textContent = '✅ ' + r.message;
+    st.textContent = (r.ok ? '✅' : '✗') + (r.error || r.message || '未知结果');
   } catch (err) { st.textContent = '❌ ' + err.message; }
 });
 $('#btn-cfg-save').addEventListener('click', async () => {
