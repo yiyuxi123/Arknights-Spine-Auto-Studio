@@ -10,7 +10,7 @@
     "fetch:prts": "node src/pipeline.mjs fetch --source prts --character 阿米娅",
     "list:skins": "node src/pipeline.mjs fetch --source prts --character 阿米娅 --list-skins",
     "inspect": "node src/pipeline.mjs inspect --skel assets/amiya/amiya.skel",
-    "run": "node src/pipeline.mjs run --prompt \"先睡觉，然后起来跑步，最后累贴下\" --skel assets/amiya/amiya.skel --mock",
+    "run": "node src/pipeline.mjs run --prompt \"先睡觉，然后起来跑步，最后累趴下\" --skel assets/amiya/amiya.skel --mock",
     "run:prts": "node src/pipeline.mjs run --source prts --character 阿米娅 --prompt \"睡觉，然后起来跑步\" --mock",
     "run:hi": "node src/pipeline.mjs run --prompt \"睡觉，然后起来挥手\" --skel assets/amiya/amiya.skel --mock --upscale 2 --sr",
     "upscale": "node src/pipeline.mjs upscale --atlas assets/amiya/amiya.atlas --png assets/amiya/amiya.png --scale 2",
