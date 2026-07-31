@@ -20,26 +20,28 @@
   <button id="btn-settings" class="icon-btn" title="设置">⚙</button>
 </header>
 
+<!-- 全局四步流程条 -->
+<nav class="flow" id="flow-bar">
+  <div class="flow-step" data-flow="models"><span class="num">1</span>拉取模型</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step" data-flow="hi"><span class="num">2</span>高清化 <em>可跳过</em></div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step" data-flow="timeline"><span class="num">3</span>编排时间轴</div>
+  <div class="flow-arrow">→</div>
+  <div class="flow-step" data-flow="generate"><span class="num">4</span>生成动画</div>
+</nav>
+
 <nav class="tabs">
-  <button class="tab-btn active" data-tab="models">🧩 模型资源</button>
-  <button class="tab-btn" data-tab="generate">🎬 动画生成</button>
-  <button class="tab-btn" data-tab="timeline">📋 时间轴</button>
-  <button class="tab-btn" data-tab="hi">✨ 高清化</button>
+  <button class="tab-btn active" data-tab="models">🧩 ① 拉取模型</button>
+  <button class="tab-btn" data-tab="hi">✨ ② 高清化（可选）</button>
+  <button class="tab-btn" data-tab="timeline">📋 ③ 编排时间轴</button>
+  <button class="tab-btn" data-tab="generate">🎬 ④ 生成动画</button>
   <button class="tab-btn" data-tab="jobs">📦 任务与输出</button>
 </nav>
 
 <main>
-  <!-- ===================== 模型资源 ===================== -->
+  <!-- ===================== ① 模型资源 ===================== -->
   <section id="tab-models" class="tab active">
-    <div class="steps">
-      <div class="step"><span class="num">1</span>输入名称 / ID</div>
-      <div class="arrow">→</div>
-      <div class="step"><span class="num">2</span>点「解析」</div>
-      <div class="arrow">→</div>
-      <div class="step"><span class="num">3</span>选皮肤/视图 →「拉取三件套」</div>
-      <div class="arrow">→</div>
-      <div class="step"><span class="num">4</span>点下方卡片选中模型</div>
-    </div>
     <div class="card">
       <h3>从 PRTS Wiki 拉取模型 <span class="hint">支持干员 / 异格 / 敌人 / 敌方领袖，含多皮肤与多视图</span></h3>
       <div class="row">
@@ -58,6 +60,11 @@
         <button id="btn-fetch" class="primary">拉取三件套</button>
         <button id="btn-fetch-force" class="ghost" title="强制重新下载">强制重下</button>
       </div>
+      <div id="fetch-done" class="row wrap" hidden>
+        <span class="ok-inline">✅ 拉取完成，模型已加入下方本地模型库</span>
+        <button id="btn-goto-hi" class="primary">下一步：② 高清化（可跳过）→</button>
+        <button id="btn-goto-tl-fast" class="ghost">跳过，直接去编排时间轴</button>
+      </div>
     </div>
 
     <div class="card">
@@ -66,71 +73,18 @@
     </div>
   </section>
 
-  <!-- ===================== 动画生成 ===================== -->
-  <section id="tab-generate" class="tab">
-    <div class="steps">
-      <div class="step"><span class="num">1</span>在「模型资源」选择模型</div>
-      <div class="arrow">→</div>
-      <div class="step"><span class="num">2</span>写下动作描述</div>
-      <div class="arrow">→</div>
-      <div class="step"><span class="num">3</span>开始生成并预览</div>
-    </div>
-    <div class="card">
-      <h3>当前模型</h3>
-      <div id="gen-model" class="muted">尚未选择模型 · <button class="ghost" id="btn-goto-models" type="button">去「模型资源」选择</button></div>
-      <div id="gen-anims" class="chips"></div>
-    </div>
-    <div class="card">
-      <h3>动作描述 <span class="hint">自然语言 → 智能动作编排（DeepSeek 有 Key 自动启用，否则离线关键词匹配）</span></h3>
-      <textarea id="g-prompt" rows="3" placeholder="例如：先睡觉，然后起来跑步，最后累趴下"></textarea>
-      <div id="g-templates" class="chips"></div>
-    </div>
-    <div class="card">
-      <h3>渲染参数</h3>
-      <div class="grid4">
-        <label>帧率 <select id="g-fps"><option>30</option><option>60</option></select></label>
-        <label>画布 <select id="g-size"><option>640x640</option><option>1280x1280</option><option>960x960</option></select></label>
-        <label>格式 <select id="g-format"><option value="gif">GIF（透明）</option><option value="mp4">MP4</option><option value="all">GIF+MP4</option></select></label>
-        <label>过渡 <select id="g-mix"><option value="0.2">0.2s</option><option value="0">硬切</option><option value="0.4">0.4s</option></select></label>
-        <label>背景 <input id="g-bg" value="00000000" title="RRGGBBAA，默认透明"></label>
-        <label>放大 <select id="g-upscale"><option value="1">1x 原图</option><option value="2">2x Lanczos</option><option value="4">4x Lanczos</option></select></label>
-        <label class="checkbox"><input id="g-sr" type="checkbox">AI 超分（Real-ESRGAN）</label>
-        <label>超分引擎 <select id="g-sr-engine"><option>realesrgan</option><option>waifu2x</option><option>realcugan</option></select></label>
-      </div>
-    </div>
-    <div class="row">
-      <button id="btn-run" class="primary big">▶ 开始生成</button>
-      <span id="run-status" class="muted"></span>
-    </div>
-    <div id="run-progress" hidden>
-      <progress id="run-progress-bar" max="100" value="0"></progress>
-      <div id="run-progress-text" class="muted"></div>
-    </div>
-    <div id="run-log" class="log" hidden></div>
-    <div id="run-result" class="card" hidden></div>
-  </section>
-
-  <!-- ===================== 时间轴 ===================== -->
-  <section id="tab-timeline" class="tab">
-    <p class="hint" style="margin:0 0 8px">💡 先去「动画生成」跑一次，这里会出现分镜列表；修改时长 / 循环 / 倍速后点「仅重渲染」即可复用当前模型与参数，无需重新生成。</p>
-    <div class="card">
-      <h3>最近一次编排时间轴 <span class="hint">可直接修改时长 / 循环 / 倍速后重新渲染</span></h3>
-      <div id="tl-empty" class="muted">还没有时间轴，先去「动画生成」跑一次。</div>
-      <table id="tl-table" hidden>
-        <thead><tr><th>动作</th><th>时长 (s)</th><th>循环</th><th>倍速</th><th>描述</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="row" id="tl-actions" hidden>
-        <button id="btn-tl-render" class="primary">仅重渲染（使用修改后的时间轴）</button>
-        <button id="btn-tl-copy" class="ghost">复制 JSON</button>
-        <span id="tl-info" class="muted"></span>
-      </div>
-    </div>
-  </section>
-
-  <!-- ===================== 高清化 ===================== -->
+  <!-- ===================== ② 高清化（可选） ===================== -->
   <section id="tab-hi" class="tab">
-    <p class="hint" style="margin:0 0 8px">💡 推荐流程：① 生成 4 方案对比图（只裁一小块，很快）→ ② 点选看着最舒服的方案 → ③ 执行整图高清化。避免整图跑完才发现效果不理想、白等。</p>
+    <div class="card" style="border-color:var(--acc)">
+      <h3>当前模型与资源</h3>
+      <div id="hi-model-state" class="muted">尚未选择模型 · <button class="ghost" id="btn-hi-goto-models" type="button">去「拉取模型」</button></div>
+      <div id="hi-res-state" class="muted">资源：原图（未高清化）</div>
+      <div class="row wrap">
+        <button id="btn-hi-skip" class="ghost">跳过高清化（用原图）</button>
+        <button id="btn-hi-goto-tl" class="primary">下一步：③ 编排时间轴 →</button>
+      </div>
+    </div>
+    <p class="hint" style="margin:0 0 8px">💡 推荐流程：① 生成 4 方案对比图（只裁一小块，很快）→ ② 点选看着最舒服的方案 → ③ 执行整图高清化。也可直接跳过。</p>
     <div class="card">
       <h3>① 方案对比 <span class="hint">同一局部区域 × 4 种方案并排对比（灰=原图 蓝=Lanczos 绿=Real-ESRGAN 紫=Waifu2x）</span></h3>
       <div class="row wrap">
@@ -161,12 +115,83 @@
         <figure><figcaption>原图</figcaption><img id="hi-before" alt="原图"></figure>
         <figure><figcaption>高清化后</figcaption><img id="hi-after" alt="高清化"></figure>
       </div>
+      <div class="row wrap" style="margin-top:10px">
+        <button id="btn-hi-use" class="primary">✅ 采用这套高清化资源</button>
+        <span id="hi-use-info" class="muted"></span>
+      </div>
     </div>
+  </section>
+
+  <!-- ===================== ③ 编排时间轴 ===================== -->
+  <section id="tab-timeline" class="tab">
+    <div class="card" style="border-color:var(--acc)">
+      <h3>当前模型与资源</h3>
+      <div id="tl-model" class="muted">尚未选择模型 · <button class="ghost" id="btn-tl-goto-models" type="button">去「拉取模型」</button></div>
+      <div id="tl-res" class="muted">资源：原图</div>
+    </div>
+
+    <div class="card">
+      <h3>① 动作预览 <span class="hint">先看看每个动作长什么样，再决定怎么编排；不预览也能直接手动排布</span></h3>
+      <div class="row wrap">
+        <button id="btn-preview" class="primary">生成动作预览图</button>
+        <span id="pv-info" class="muted"></span>
+      </div>
+      <div id="pv-grid" class="pv-grid"></div>
+    </div>
+
+    <div class="card">
+      <h3>② 编排时间轴 <span class="hint">两种方式：写一句自然语言让 AI 排；或在下方的动作卡上点「＋」手动排布</span></h3>
+      <textarea id="tl-prompt" rows="2" placeholder="例如：先睡觉，然后起来跑步，最后累趴下"></textarea>
+      <div class="row wrap">
+        <button id="btn-plan" class="primary">生成时间轴（DeepSeek / 离线关键词）</button>
+        <button id="btn-queue-clear" class="ghost">清空时间轴</button>
+        <span id="plan-info" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>③ 时间轴排布 <span class="hint">拖不动的 PR 式时间轴：色块即时长，可改时长 / 循环 / 倍速，↑↓ 调顺序，✕ 删除</span></h3>
+      <div id="tl-queue-bar" class="tl-bar"></div>
+      <div id="tl-queue" class="tl-queue"></div>
+      <div class="row wrap">
+        <button id="btn-tl-generate" class="primary big">下一步：④ 去生成动画 →</button>
+        <span id="tl-queue-info" class="muted"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== ④ 动画生成 ===================== -->
+  <section id="tab-generate" class="tab">
+    <div class="card" style="border-color:var(--acc)">
+      <h3>当前模型与资源</h3>
+      <div id="gen-model" class="muted">尚未选择模型 · <button class="ghost" id="btn-goto-models" type="button">去「拉取模型」</button></div>
+      <div id="gen-res" class="muted">资源：原图</div>
+      <div id="gen-tl-state" class="muted">时间轴：未编排 · <button class="ghost" id="btn-goto-tl" type="button">去「编排时间轴」</button></div>
+      <div id="gen-anims" class="chips"></div>
+    </div>
+    <div class="card">
+      <h3>渲染参数</h3>
+      <div class="grid4">
+        <label>帧率 <select id="g-fps"><option>30</option><option>60</option></select></label>
+        <label>画布 <select id="g-size"><option>640x640</option><option>1280x1280</option><option>960x960</option></select></label>
+        <label>格式 <select id="g-format"><option value="gif">GIF（透明）</option><option value="mp4">MP4</option><option value="all">GIF+MP4</option></select></label>
+        <label>过渡 <select id="g-mix"><option value="0.2">0.2s</option><option value="0">硬切</option><option value="0.4">0.4s</option></select></label>
+        <label>背景 <input id="g-bg" value="00000000" title="RRGGBBAA，默认透明"></label>
+        <label>放大 <select id="g-upscale"><option value="1">1x 原图</option><option value="2">2x Lanczos</option><option value="4">4x Lanczos</option></select></label>
+        <label class="checkbox"><input id="g-sr" type="checkbox">AI 超分（Real-ESRGAN）</label>
+        <label>超分引擎 <select id="g-sr-engine"><option>realesrgan</option><option>waifu2x</option><option>realcugan</option></select></label>
+      </div>
+    </div>
+    <button id="btn-run" class="primary big">▶ 开始生成</button>
+    <span id="run-status" class="muted"></span>
+    <div id="run-progress" class="progress" hidden><progress id="run-progress-bar" max="100" value="0"></progress><span id="run-progress-text"></span></div>
+    <div id="run-log" class="log" hidden></div>
+    <div id="run-result" class="card" hidden></div>
   </section>
 
   <!-- ===================== 任务与输出 ===================== -->
   <section id="tab-jobs" class="tab">
-    <p class="hint" style="margin:0 0 8px">💡 生成完成的 GIF/MP4 会列在这里（也可在项目 out/ 目录找到）；「任务历史」保留每次任务的日志，便于排查。</p>
+    <p class="hint" style="margin:0 0 8px">💡 点任意输出卡片可放大预览；GIF/MP4 也可直接在卡片上播放；「任务历史」保留每次任务的日志。</p>
     <div class="card">
       <h3>输出记录 <button id="btn-refresh-out" class="ghost">刷新</button></h3>
       <div id="out-list" class="out-grid"></div>
@@ -176,6 +201,14 @@
       <div id="job-list"></div>
     </div>
   </section>
+
+<!-- ===================== 预览灯箱 ===================== -->
+<div id="lightbox" class="overlay" hidden>
+  <div class="modal lb">
+    <div class="modal-head"><h3 id="lb-title"></h3><button id="btn-lb-close" class="ghost">✕</button></div>
+    <div id="lb-body" class="lb-body"></div>
+  </div>
+</div>
 
 <!-- ===================== 设置面板 ===================== -->
 <div id="settings-overlay" class="overlay" hidden>
@@ -202,7 +235,7 @@
     </div>
     <div class="card">
       <h4>关于</h4>
-      <div class="muted">明日方舟 Spine 自动动画工作室 · 桌面版 v1.0<br>本地服务 127.0.0.1:4879 · 数据与输出保存在项目目录（out/）</div>
+      <div class="muted">明日方舟 Spine 自动动画工作室 · 桌面版 v1.0.4<br>本地服务 127.0.0.1:4879 · 数据与输出保存在项目目录（out/）</div>
     </div>
   </div>
 </div>

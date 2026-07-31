@@ -213,6 +213,7 @@ function safeName(name) {
 function listFiles(dir, depth = 0) {
   if (!fs.existsSync(dir) || depth > 2) return [];
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
+    if (d.name.startsWith('.')) return [];
     const p = path.join(dir, d.name);
     if (d.isDirectory()) return listFiles(p, depth + 1);
     if (!d.isFile()) return [];
@@ -316,6 +317,38 @@ async function handleApi(req, res, url) {
     } catch (err) {
       sendError(res, new Error('连接失败: ' + err.message));
     }
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/plan') {
+    const body = await readBody(req);
+    const prompt = String(body.prompt || '').trim();
+    if (!prompt) return sendJson(res, 400, { ok: false, error: '请先写下动作描述' });
+    const jobId = enqueue('plan', async () => {
+      let skel = String(body.skel || '');
+      let atlas = String(body.atlas || '');
+      let png = String(body.png || '');
+      if (!skel || !atlas || !png) {
+        const key = String(body.key || '');
+        const model = cachedModels().find((m) => m.id === key);
+        if (!model || !model.files || !model.files.skel) throw new Error('未找到模型 ' + key + '，请先拉取三件套');
+        skel = model.files.skel; atlas = model.files.atlas; png = model.files.png;
+      }
+      const animations = parseSkeleton(new Uint8Array(fs.readFileSync(skel))).animations.map((a) => ({ name: a.name, duration: a.duration }));
+      const cfg = applyConfig();
+      const { choreograph } = await import('../src/choreograph.mjs');
+      const plan = await choreograph({
+        prompt,
+        animations,
+        character: String(body.character || body.key || '角色'),
+        fps: parseInt(body.fps || '30', 10) || 30,
+        mock: !cfg.apiKey,
+        apiKey: cfg.apiKey || undefined,
+        model: cfg.model,
+        baseURL: cfg.baseURL,
+      });
+      return { character: plan.character, fps: plan.fps, timeline: plan.timeline, mode: plan.mode };
+    });
+    sendJson(res, 202, { ok: true, jobId });
     return;
   }
   if (req.method === 'GET' && pathname === '/api/jobs') {
@@ -424,6 +457,9 @@ async function handleApi(req, res, url) {
     if (body.key) argv.push('--key', String(body.key));
     if (body.skin) argv.push('--skin', String(body.skin));
     if (body.view) argv.push('--view', String(body.view));
+    if (body.skel) argv.push('--skel', String(body.skel));
+    if (body.atlas) argv.push('--atlas', String(body.atlas));
+    if (body.png) argv.push('--png', String(body.png));
     if (body.timeline) {
       const t = typeof body.timeline === 'string' ? JSON.parse(body.timeline) : body.timeline;
       const tlFile = `${outBase}.timeline.json`;
@@ -450,6 +486,38 @@ async function handleApi(req, res, url) {
         })
         .filter(Boolean);
       return { outBase, files, timelineFile: `${outBase}.timeline.json`, logs: [] };
+    });
+    sendJson(res, 202, { ok: true, jobId });
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/previews') {
+    const body = await readBody(req);
+    const skel = String(body.skel || '');
+    const atlas = String(body.atlas || '');
+    const png = String(body.png || '');
+    if (!skel || !atlas || !png || !fs.existsSync(skel) || !fs.existsSync(atlas) || !fs.existsSync(png)) {
+      return sendJson(res, 400, { ok: false, error: '模型三件套不完整，请先拉取模型' });
+    }
+    const jobId = enqueue('preview', async () => {
+      const { renderActionPreviews } = await import('../src/preview.mjs');
+      const tag = safeName(body.outName || 'model') + '-' + Date.now();
+      const pvDir = path.join(outDir, '.previews', tag);
+      const items = await renderActionPreviews({
+        rootDir: root,
+        assets: { skel, atlas, png },
+        outDir: pvDir,
+        chromePath: chromeCandidates(),
+        onLog: (m) => console.log(m),
+      });
+      return {
+        tag,
+        outDir: pvDir,
+        files: items.map((it) => ({
+          name: it.name,
+          duration: it.duration,
+          url: '/outputs/.previews/' + tag + '/' + encodeURIComponent(path.basename(it.file)),
+        })),
+      };
     });
     sendJson(res, 202, { ok: true, jobId });
     return;
