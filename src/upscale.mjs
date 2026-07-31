@@ -48,9 +48,10 @@ export function scaleAtlasText(atlasText, scale, { pageName } = {}) {
       out.push(pageName || line);
       continue;
     }
-    m = line.match(/^\s*([A-Za-z]+)\s*:\s*(.*)$/);
-    if (m && SCALED_ATLAS_KEYS.has(m[1])) {
-      const scaled = m[2]
+    m = line.match(/^(\s*)([A-Za-z]+)\s*:\s*(.*)$/);
+    if (m && SCALED_ATLAS_KEYS.has(m[2])) {
+      const indent = m[1];
+      const scaled = m[3]
         .split(',')
         .map((raw) => {
           const v = raw.match(/^(\s*)([-+]?\d+(?:\.\d+)?)(.*)$/);
@@ -58,7 +59,7 @@ export function scaleAtlasText(atlasText, scale, { pageName } = {}) {
           return v[1] + String(Math.round(parseFloat(v[2]) * scale)) + v[3];
         })
         .join(',');
-      out.push(`${m[1]}: ${scaled}`);
+      out.push(indent + m[2] + ': ' + scaled);
       continue;
     }
     out.push(line);

@@ -93,7 +93,7 @@ function waitJob(jobId) {
         }).catch(reject);
       }
     }, 120000);
-  });
+  }).finally(() => setBusy(false)); // 无论成功/失败/超时都恢复按钮，防止卡死
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +220,7 @@ $('#btn-resolve').addEventListener('click', async () => {
   out.className = 'muted';
   try {
     const { jobId } = await api('/api/resolve', { query, enemy, key: key || undefined });
+    state.activeJob = jobId;
     const r = await waitJob(jobId);
     state.resolve = r;
     const tag = r.kind === 'enemy' ? '敌人' : '角色';

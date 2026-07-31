@@ -52,6 +52,8 @@ function check(label, ok, detail = '') {
   check('atlas: split/pad scaled', vals('split')[0] === '2, 2, 2, 2' && vals('pad')[0] === '0, 0, 0, 0', `${vals('split').join('|')} ${vals('pad').join('|')}`);
   check('atlas: rotate untouched', text.includes('rotate: true'));
   check('atlas: index untouched', text.includes('index: -1'));
+  check('atlas: region attr indentation kept (xy indented)', /^\s{2}xy:/m.test(text), 'indent lost would break Spine atlas parsing');
+  check('atlas: page size line stays top-level', /^size: 1024,1024$/m.test(text));
   check('atlas: filter/repeat untouched', text.includes('filter: Linear,Linear') && text.includes('repeat: none'));
 }
 
