@@ -308,6 +308,21 @@ function updateAssetViews() {
   txt('#hi-use-info', '');
   const useBtn = $('#btn-hi-use');
   if (useBtn) useBtn.hidden = true;
+  // 超分控件：已用 ② 高清资源时自动禁用（避免重复高清化）
+  const hi = !!assets.isHi;
+  for (const id of ['#g-upscale', '#g-sr', '#g-sr-engine']) {
+    const el = $(id);
+    if (!el) continue;
+    el.disabled = hi;
+    const lab = el.closest('label');
+    if (lab) lab.classList.toggle('dim', hi);
+  }
+  const hint = $('#gen-upscale-hint');
+  if (hint) {
+    hint.textContent = hi
+      ? '当前使用 ② 高清化资源（' + label + '），生成时不会再次放大；如需其他倍率请回到 ② 高清化重新选择。'
+      : '当前使用原图：若开启上方「放大 / AI 超分」，将在生成前自动放大再渲染（会更耗时）。';
+  }
   updateGenTlState();
 }
 function updateGenTlState() {
@@ -653,6 +668,7 @@ function selectModel(m) {
   const anims = $('#gen-anims');
   anims.innerHTML = (m.animations || []).map((a) => '<span class="chip-anim">' + escapeHtml(a.name) + ' ' + a.duration.toFixed(2) + 's</span>').join('') || '';
   localStorage.setItem('zd.current', JSON.stringify({ id: m.id, name: m.name, groupId: m.groupId }));
+  updateAssetViews();
   updateGenTlState();
 }
 

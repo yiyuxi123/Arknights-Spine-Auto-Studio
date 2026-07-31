@@ -569,3 +569,7 @@ button.danger:hover { background: rgba(255, 123, 123, 0.1); border-color: var(--
 .stars { color: var(--accent2); font-size: 11px; letter-spacing: 1px; white-space: nowrap; }
 .model-card .tag.enemy { color: var(--err); border-color: rgba(255,123,123,0.45); background: rgba(255,123,123,0.07); }
 #enrich-info { font-size: 12px; }
+
+/* 高清化资源时：生成页超分控件置灰 */
+.grid4 label.dim { opacity: 0.45; filter: saturate(0.4); }
+#gen-upscale-hint { color: var(--muted); font-size: 12px; }
