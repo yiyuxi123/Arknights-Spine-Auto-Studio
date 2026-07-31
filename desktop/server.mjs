@@ -836,6 +836,7 @@ async function handleApi(req, res, url) {
       return sendJson(res, 400, { ok: false, error: '模型文件不存在，请先拉取三件套' });
     }
     const argv = ['upscale', '--atlas', atlas, '--png', png, '--scale', String(body.scale || '2')];
+    if (body.slice) argv.push('--slice');
     if (body.sr) argv.push('--sr');
     if (body.srEngine) argv.push('--sr-engine', String(body.srEngine));
     const outTag = `${safeName(body.outName || 'hi')}-${Date.now()}`;

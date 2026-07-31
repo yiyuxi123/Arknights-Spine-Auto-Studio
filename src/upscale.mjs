@@ -197,6 +197,10 @@ export function upscalePng(pngBuffer, scale) {
  * @param {string} opts.pngPath
  * @param {number} opts.scale          final synchronized scale (>=1)
  * @param {string} opts.outDir         directory for the enlarged assets
+ * @param {boolean} [opts.slice]       slice-first mode: crop regions, upscale each
+ *   piece (with transparent padding), repack into a new page + atlas.
+ *   Best quality with AI engines; slightly slower. Falls back to the
+ *   whole-sheet path when the atlas has 9-slice regions or no regions.
  * @param {object|null} [opts.sr]      resolved SR engine handle (from sr.mjs)
  * @param {number} [opts.srScale]      engine's own scale; 0 = engine default
  * @param {number} [opts.srGpu]        engine GPU id (default 0)
@@ -213,9 +217,65 @@ export async function prepareUpscaledAssets({
   srScale = 0,
   srGpu = 0,
   srTile = 0,
+  slice = false,
   onLog = () => {},
 }) {
   const atlasText = fs.readFileSync(atlasPath, 'utf8');
+
+  if (slice) {
+    const { alignAssetsInPlace } = await import('./align.mjs');
+    try { alignAssetsInPlace({ atlasPath, pngPath, onLog }); } catch (e) { onLog('[slice] 对齐跳过: ' + e.message); }
+    const { sliceAtlas } = await import('./slice.mjs');
+    const srcDir0 = path.dirname(pngPath);
+    const srcName0 = path.basename(pngPath);
+    fs.mkdirSync(outDir, { recursive: true });
+    let pieceNo = 0;
+    const upscalePiece = sr
+      ? async (rgba, w, h, targetW, targetH) => {
+          const inFile = path.join(outDir, '.piece-' + pieceNo + '.png');
+          const srOut = path.join(outDir, '.piece-sr-' + pieceNo + '.png');
+          pieceNo += 1;
+          fs.writeFileSync(inFile, encodePng(rgba, w, h));
+          const engineScale = srScale > 0 ? srScale : sr.defaultScale;
+          const res = await sr.run({ input: fs.readFileSync(inFile), outputFile: srOut, scale: engineScale, gpu: srGpu, tile: srTile });
+          fs.rmSync(inFile, { force: true });
+          if (!res.ok) throw new Error('SR engine failed: ' + res.error);
+          const { width: ew, height: eh, rgba: ergba } = decodePng(fs.readFileSync(srOut));
+          fs.rmSync(srOut, { force: true });
+          if (ew === targetW && eh === targetH) return Buffer.from(ergba);
+          return resizeRgba(ergba, ew, eh, targetW, targetH);
+        }
+      : (rgba, w, h, targetW, targetH) => resizeRgba(rgba, w, h, targetW, targetH);
+    try {
+      const result = await sliceAtlas({
+        atlasText,
+        readPage: (pageName) => {
+          const p = path.join(srcDir0, pageName);
+          if (fs.existsSync(p)) return fs.readFileSync(p);
+          return fs.readFileSync(pngPath);
+        },
+        outNameFor: (pageName, i) => (i === 0 ? srcName0 : pageName),
+        scale,
+        upscalePiece,
+        onLog,
+      });
+      for (const pg of result.pages) {
+        fs.writeFileSync(path.join(outDir, pg.name), pg.buffer);
+        onLog('[slice] ' + pg.name + ' 重组完成 ' + (pg.buffer.length > 0 ? '' : ''));
+      }
+      fs.writeFileSync(path.join(outDir, path.basename(atlasPath)), result.atlasText);
+      const firstPage = result.pages[0];
+      return { atlas: path.join(outDir, path.basename(atlasPath)), png: path.join(outDir, firstPage.name) };
+    } catch (err) {
+      const fallback = String(err && err.message || err);
+      if (fallback.includes('9-slice') || fallback.includes('无可解析') || fallback.includes('exceeds cap') || fallback.includes('wider than')) {
+        onLog('[slice] 该图集不适合切片模式（' + fallback + '），回退为整图放大');
+      } else {
+        throw err;
+      }
+    }
+  }
+
   const parsed = scaleAtlasText(atlasText, scale);
   const srcDir = path.dirname(pngPath);
   const srcName = path.basename(pngPath);
@@ -296,6 +356,7 @@ export async function main(argv = process.argv.slice(2)) {
   --atlas PATH      源 .atlas（会同步放大 size/xy/orig/offset/split/pad）
   --png PATH        源 PNG 贴图页（Lanczos3 放大；--sr 时改用 AI 超分引擎）
   --scale N         放大倍数（整数，默认 2）
+  --slice           切片模式：按 atlas 逐片放大后重组（质量更佳，推荐）
   --out DIR         输出目录（默认与源文件同目录下的 <name>-hi/）
   --sr              使用 AI 超分引擎放大 PNG（默认 Real-ESRGAN anime6B）
   --sr-engine PATH  指定已下载的 ncnn-vulkan 引擎 exe 路径
@@ -322,6 +383,7 @@ export async function main(argv = process.argv.slice(2)) {
     outDir,
     sr: srHandle,
     srScale: parseInt(args['sr-scale'] || '0', 10) || 0,
+    slice: !!args.slice,
     onLog: (m) => console.log(m),
   });
   console.log(`[done] 同步放大 x${scale} 完成:`);

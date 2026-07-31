@@ -171,9 +171,10 @@ async function cmdUpscale(args) {
     srScale: parseInt(args['sr-scale'] || '0', 10) || 0,
     srGpu: parseInt(args['sr-gpu'] || '0', 10) || 0,
     srTile: parseInt(args['sr-tile'] || '0', 10) || 0,
+    slice: !!args.slice,
     onLog: (m) => console.log(m),
   });
-  console.log(`[done] 高清化完成 x${scale}：atlas 与 PNG 同步缩放`);
+  console.log(`[done] 高清化完成 x${scale}：atlas 与 PNG 同步缩放${args.slice ? '（切片模式）' : ''}`);
   console.log('  ', result.atlas);
   console.log('  ', result.png);
   return [result.atlas, result.png];

@@ -45,8 +45,10 @@ node src/pipeline.mjs run --prompt "睡觉，然后起来挥手" --skel assets/a
 
 # 11. 最强画质：AI 超分引擎（Real-ESRGAN anime6B，首次自动下载约 43MB）
 node src/pipeline.mjs run --prompt "睡觉，然后起来挥手" --skel assets/amiya/amiya.skel --mock --upscale 2 --sr
+# 12. 切片高清化（推荐）：先按 atlas 拆片、逐片放大后重组，AI 放大聚焦单片、零串色
+node src/pipeline.mjs upscale --atlas assets/amiya/amiya.atlas --png assets/amiya/amiya.png --scale 2 --slice --sr
 
-# 12. 桌面端软件（GUI）：双击 start-desktop.cmd 启动
+# 13. 桌面端软件（GUI）：双击 start-desktop.cmd 启动
 #     可选 Electron 版：先运行 install-desktop.cmd 安装，再双击 start-desktop.cmd
 
 ```
@@ -87,7 +89,7 @@ start-desktop.cmd          # 已装 Electron 时自动以桌面窗口启动
 - **② 高清化（可选）**：一键生成「四格方案对比图」（原图 / Lanczos3 / Real-ESRGAN / Waifu2x 同一局部
   放大并排对比，带彩色标识条）→ 点选满意方案 →「开始高清化」执行整图；完成后「采用这套高清化资源」，
   后续动画生成**直接使用高清资源（不会重复放大）**；也可「跳过高清化」用原图。
-  资源双目录隔离：原始三件套永存 `assets/<模型ID>/`，高清化产物在 `out/hi/`，互不覆盖。
+  资源双目录隔离：原始三件套永存 `assets/<模型ID>/`，高清化产物在 `out/hi/`，互不覆盖。 勾选「按切片高清化」后改为先按 atlas 拆片、逐片放大再重组回图集（推荐：AI 放大聚焦单片、边缘零串色，`out/hi/` 中同时保留整图放大与切片两套产物）。
 - **③ 编排时间轴**：先「生成动作预览」把每个动作渲染成预览（⚡单帧快照 或 🎬完整动画 GIF，
   默认 GIF，一眼看清每个动作；预览固定用原始资源，快）。动作名看不懂？点「🤖 AI 自动标注」：
   离线规则先猜（Idle/Move/Attack/Sleep…），千问 Qwen-VL 看图补全 `special_01` 这类乱码动作，

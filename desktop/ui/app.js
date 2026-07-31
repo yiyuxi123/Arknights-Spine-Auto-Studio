@@ -1455,14 +1455,16 @@ $('#btn-hi').addEventListener('click', async () => {
   const scale = $('#h-scale').value;
   const srOn = $('#h-sr').checked;
   const srEngine = $('#h-sr-engine').value;
-  const label = '高清化' + scale + 'x' + (srOn ? ' + AI(' + srEngine + ')' : '');
+  const sliceOn2 = !!($('#h-slice') && $('#h-slice').checked);
+  const label = '高清化' + scale + 'x' + (srOn ? ' + AI(' + srEngine + ')' : '') + (sliceOn2 ? ' + 切片' : '');
   let done = 0, failed = 0;
   try {
     for (const m of targets) {
       $('#hi-info').textContent = '⚠️ 高清化 ' + (done + failed + 1) + '/' + targets.length + '：' + m.name + ' · ' + (m.viewLabel || m.base || '');
+      const sliceOn = !!($('#h-slice') && $('#h-slice').checked);
       const { jobId } = await api('/api/upscale', {
         atlas: m.files.atlas, png: m.files.png,
-        scale, sr: srOn, srEngine,
+        scale, sr: srOn, srEngine, slice: sliceOn,
         outName: m.name,
       });
       state.activeJob = jobId;
