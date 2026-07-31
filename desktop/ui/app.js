@@ -1016,7 +1016,11 @@ function renderPvGrid() {
   const files = state.previews || [];
   if (!files.length) { box.innerHTML = '<div class="muted">还没有预览，点上方「生成动作预览」。</div>'; return; }
   box.innerHTML = '';
-  const inQueue = new Set(state.queue.map((s) => s.action + '\u0000' + (s.view || '')));
+  const inQueue = new Map();
+  for (const s of state.queue) {
+    const k = s.action + '\u0000' + (s.view || '');
+    inQueue.set(k, (inQueue.get(k) || 0) + 1);
+  }
   const groups = new Map();
   for (const p of files) {
     const v = p.view || '';
@@ -1037,7 +1041,8 @@ function renderPvGrid() {
     grid.className = 'pv-grid';
     for (const p of list) {
       const card = document.createElement('div');
-      card.className = 'pv-card' + (inQueue.has(p.name + '\u0000' + (p.view || '')) ? ' used' : '');
+      const cnt = inQueue.get(p.name + '\u0000' + (p.view || '')) || 0;
+      card.className = 'pv-card' + (cnt > 0 ? ' used' : '');
       const desc = state.pvDesc[p.name] || '';
       const isGif = p.kind === 'gif';
       card.innerHTML =
@@ -1048,12 +1053,12 @@ function renderPvGrid() {
         '<div class="pv-name"><b>' + escapeHtml(p.name) + '</b><span class="muted">' + (p.duration > 0 ? p.duration.toFixed(2) + 's' : '瞬发') + (isGif ? ' · GIF' : '') + '</span></div>' +
         (desc ? '<div class="pv-tags" title="' + escapeHtml(desc) + '">' + escapeHtml(desc) + '</div>' : '') +
         '<input class="pv-desc" type="text" placeholder="这个动作代表什么？（可选，可点 🤖 AI 自动标注）" value="' + escapeHtml(desc) + '">' +
-        '<button class="primary pv-add" type="button">＋ 加入时间轴</button>';
+        '<button class="primary pv-add" type="button">' + (cnt > 0 ? '＋ 再加入（已在 ×' + cnt + '）' : '＋ 加入时间轴') + '</button>';
       const descInput = card.querySelector('.pv-desc');
       descInput.addEventListener('input', () => {
         state.pvDesc[p.name] = descInput.value;
-        const seg = state.queue.find((s) => s.action === p.name);
-        if (seg) { seg.description = descInput.value; renderQueue(); }
+        state.queue.forEach((s) => { if (s.action === p.name) s.description = descInput.value; });
+        renderQueue();
       });
       card.querySelector('.pv-add').addEventListener('click', () => {
         queueAdd(p.name, p.duration, descInput.value, p.view || '');
@@ -1066,15 +1071,20 @@ function renderPvGrid() {
   }
 }
 function queueAdd(action, duration, description, view) {
-  const existing = state.queue.find((s) => s.action === action && (s.view || '') === (view || ''));
-  if (existing) { queueRemove(state.queue.indexOf(existing)); return; }
-  const d = duration && duration > 0 ? Math.min(Math.max(duration, 0.5), 10) : 2;
-  state.queue.push({ action, view: view || '', loop: d >= 2, duration: d, timeScale: 1, repeat: 1, description: description || '' });
+  const d2 = duration && duration > 0 ? Math.min(Math.max(duration, 0.5), 10) : 2;
+  state.queue.push({ action, view: view || '', loop: d2 >= 2, duration: d2, timeScale: 1, repeat: 1, description: description || '' });
   renderQueue();
   if (typeof renderPvGrid === 'function') renderPvGrid();
 }
 function queueRemove(i) {
   state.queue.splice(i, 1);
+  renderQueue();
+  if (typeof renderPvGrid === 'function') renderPvGrid();
+}
+function queueDup(i) {
+  const seg = state.queue[i];
+  if (!seg) return;
+  state.queue.splice(i + 1, 0, { ...seg });
   renderQueue();
   if (typeof renderPvGrid === 'function') renderPvGrid();
 }
@@ -1129,6 +1139,7 @@ function renderQueue() {
       <span class="tl-ops">
         <button class="ghost" data-op="up" title="上移">↑</button>
         <button class="ghost" data-op="down" title="下移">↓</button>
+        <button class="ghost" data-op="dup" title="复制此段">⧉</button>
         <button class="ghost danger" data-op="del" title="删除">✕</button>
       </span>`;
     const sync = () => {
@@ -1147,6 +1158,7 @@ function renderQueue() {
       const op = btn.dataset.op;
       if (op === 'up') queueMove(i, -1);
       else if (op === 'down') queueMove(i, 1);
+      else if (op === 'dup') queueDup(i);
       else queueRemove(i);
     }));
     box.appendChild(row);
