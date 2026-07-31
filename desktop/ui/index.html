@@ -99,6 +99,7 @@
       <h3>当前模型与资源</h3>
       <div id="hi-model-state" class="muted">尚未选择模型 · <button class="ghost" id="btn-hi-goto-models" type="button">去「拉取模型」</button></div>
       <div id="hi-res-state" class="muted">资源：原图（未高清化）</div>
+      <div id="hi-worklist" class="hi-worklist"></div>
       <div class="row wrap">
         <button id="btn-hi-skip" class="ghost">跳过高清化（用原图）</button>
         <button id="btn-hi-goto-tl" class="primary">下一步：③ 编排时间轴 →</button>
@@ -108,7 +109,7 @@
     <div class="card">
       <h3>① 方案对比 <span class="hint">同一局部区域 × 4 种方案并排对比（灰=原图 蓝=Lanczos 绿=Real-ESRGAN 紫=Waifu2x）</span></h3>
       <div class="row wrap">
-        <select id="h-model" class="grow"></select>
+        <span id="h-model-tip" class="muted">对比目标：点击上方工作集清单选择（默认第一套）</span>
         <label>倍数 <select id="h-scale"><option value="2">2x</option><option value="4">4x</option></select></label>
         <button id="btn-compare" class="primary">生成方案对比</button>
         <span id="cmp-info" class="muted"></span>

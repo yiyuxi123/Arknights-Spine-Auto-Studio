@@ -13,6 +13,9 @@ const state = {
   assetSet: null,         // 高清化资源 {modelId, skel, atlas, png, label}
   previews: null,         // 动作预览 [{name, duration, url, view}]
   fetchViews: null,       // 拉取时下载的视图列表 [{view, base, files, animations}]
+  selection: [],          // 工作集：用户勾选的模型 id 列表
+  assetSets: {},          // modelId -> 高清化资源 {skel, atlas, png, label}
+  hiCompareId: null,      // 高清化对比目标模型 id
   pvDesc: {},             // 动作名 -> 用户描述
   queue: [],              // 时间轴 [{action, loop, duration, timeScale, description}]
   lastTimeline: null,
@@ -336,7 +339,7 @@ async function refreshState() {
     state.assetsDir = s.assetsDir || '';
     renderModels();
     renderDirFilters();
-    renderHiModelSelect();
+    renderHiWorkList();
     updateModelCount();
     renderOutputs();
     const c = $('#chip-chrome');
@@ -817,6 +820,7 @@ function updateWorkSetUI() {
   const btn = $('#btn-hi');
   const n = workingCount();
   if (btn) btn.textContent = n > 1 ? '开始高清化（工作集 ' + n + ' 套）' : '开始高清化';
+  renderHiWorkList();
 }
 function selectModel(m) {
   if (!m) return;
@@ -839,7 +843,7 @@ function selectModel(m) {
   }
   state.current = m;
   renderModels();
-  renderHiModelSelect();
+  renderHiWorkList();
   updateWorkSetUI();
   const fullName = m.name + ' · ' + modelEntryLabel(m);
   const label = currentAssets()?.label || '原图';
@@ -872,31 +876,39 @@ $('#btn-work-clear')?.addEventListener('click', () => {
   updateWorkSetUI();
 });
 
-function renderHiModelSelect() {
-  const sel = $('#h-model');
-  if (!sel) return;
-  const prev = sel.value;
-  sel.innerHTML = '';
-  const groups = groupModels('');
-  for (const [gid, entries] of groups) {
-    const og = document.createElement('optgroup');
-    og.label = entries[0].name + "?" + gid + "?";
-    for (const e of entries) {
-      const opt = document.createElement('option');
-      opt.value = e.id;
-      opt.textContent = e.name + " ? " + modelEntryLabel(e);
-      og.appendChild(opt);
-    }
-    sel.appendChild(og);
+function hiCompareTarget() {
+  if (state.hiCompareId) {
+    const m = state.models.find((x) => x.id === state.hiCompareId);
+    if (m) return m;
   }
-  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
-  else if (state.current && [...sel.options].some((o) => o.value === state.current.id)) sel.value = state.current.id;
+  return workingModels()[0] || state.current;
 }
-$('#h-model')?.addEventListener('change', () => {
-  const m = state.models.find((x) => x.id === $('#h-model').value);
-  if (m) selectModel(m);
-});
-
+function renderHiWorkList() {
+  const box = $('#hi-worklist');
+  if (!box) return;
+  const ws = workingModels();
+  if (!ws.length) {
+    box.innerHTML = '<div class="muted" style="padding:8px 2px">尚未选择模型，请先回到「① 拉取模型」勾选工作集（可多套）</div>';
+    return;
+  }
+  const rows = ws.map((m) => {
+    const set = state.assetSets && state.assetSets[m.id];
+    const sel = state.hiCompareId ? state.hiCompareId === m.id : m.id === (ws[0]?.id || '');
+    return '<div class="hi-wl-row' + (sel ? ' sel' : '') + '" data-id="' + escapeHtml(m.id) + '">' +
+      '<b>' + escapeHtml(m.name) + '</b>' +
+      '<span class="muted">' + escapeHtml(m.viewLabel || m.base || '') + '</span>' +
+      '<span class="tag' + (set ? ' ok' : '') + '">' + (set ? escapeHtml(set.label || '已高清化') : '原图') + '</span>' +
+      '</div>';
+  }).join('');
+  box.innerHTML = '<div class="hi-wl-head"><b>📌 工作集（' + ws.length + ' 套）</b><span class="muted">点击行设为对比目标</span></div>' + rows;
+  box.querySelectorAll('.hi-wl-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      state.hiCompareId = row.dataset.id;
+      renderHiWorkList();
+      $('#cmp-info').textContent = '对比目标：' + escapeHtml((state.models.find((x) => x.id === state.hiCompareId) || {}).name || '');
+    });
+  });
+}
 
 $('#btn-enrich')?.addEventListener('click', async () => {
   const btn = $('#btn-enrich');
@@ -1366,7 +1378,7 @@ $('#h-sr-engine').addEventListener('change', () => { hiPlanKey = null; renderHiP
 $('#h-scale').addEventListener('change', () => { renderHiPlans(); });
 
 $('#btn-compare').addEventListener('click', async () => {
-  const m = state.models.find((x) => x.id === $('#h-model').value);
+  const m = hiCompareTarget();
   if (!m || !m.files.atlas || !m.files.png) {
     $('#cmp-info').textContent = '❌ 该模型缺少 atlas/png，请先拉取完整三件套';
     return;

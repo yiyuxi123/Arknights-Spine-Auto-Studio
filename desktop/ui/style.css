@@ -605,3 +605,13 @@ button.danger:hover { background: rgba(255, 123, 123, 0.1); border-color: var(--
 .m-view.selw { outline: 1px solid rgba(180,120,255,.6); background: rgba(180,120,255,.10); }
 .m-sel { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 18px; height: 18px; }
 .m-sel input { width: 15px; height: 15px; accent-color: #b478ff; cursor: pointer; }
+
+/* ---------- hi-res worklist ---------- */
+.hi-worklist { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.hi-wl-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; padding: 2px 0; }
+.hi-wl-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,0.03); cursor: pointer; transition: all .15s; }
+.hi-wl-row:hover { background: rgba(92,179,255,.1); border-color: rgba(92,179,255,.4); }
+.hi-wl-row.sel { border-color: var(--accent); background: rgba(92,179,255,.14); box-shadow: inset 3px 0 0 var(--accent); }
+.hi-wl-row .muted { font-family: var(--mono); font-size: 11px; }
+.hi-wl-row .tag { margin-left: auto; font-size: 11px; }
+.hi-wl-row .tag.ok { color: var(--ok); border-color: rgba(74,222,154,.4); background: rgba(74,222,154,.1); }
