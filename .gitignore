@@ -1,0 +1,14 @@
+node_modules/
+desktop/node_modules/
+out/
+dist/
+assets/*
+!assets/amiya/
+vendor/spine-3.8/
+vendor/ffmpeg/
+vendor/realesrgan/
+vendor/waifu2x/
+vendor/realcugan/
+config.json
+*.log
+.DS_Storetest/out.gif

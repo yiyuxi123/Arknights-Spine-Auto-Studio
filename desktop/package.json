@@ -1,0 +1,14 @@
+{
+  "name": "arknights-spine-auto-studio-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Arknights Spine Auto-Studio desktop shell (Electron)",
+  "main": "electron-main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0"
+  }
+}

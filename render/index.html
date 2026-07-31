@@ -1,0 +1,223 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Spine Studio Renderer</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+  #stage { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script src="../vendor/spine-player.js"></script>
+<script>
+(function () {
+  'use strict';
+  var canvas = document.getElementById('stage');
+  var params = new URLSearchParams(location.search);
+  var cfg = {
+    skel: params.get('skel') || 'assets/amiya/amiya.skel',
+    atlas: params.get('atlas') || 'assets/amiya/amiya.atlas',
+    png: params.get('png') || 'assets/amiya/amiya.png',
+    width: parseInt(params.get('w') || '640', 10),
+    height: parseInt(params.get('h') || '640', 10),
+    background: params.get('bg') || '00000000',
+    premultipliedAlpha: (params.get('premult') || '1') !== '0',
+    mix: parseFloat(params.get('mix') || '0.2'),
+    fit: parseFloat(params.get('fit') || '0.92')
+  };
+  canvas.width = cfg.width;
+  canvas.height = cfg.height;
+
+  var context = new spine.webgl.ManagedWebGLRenderingContext(canvas, {
+    alpha: true, premultipliedAlpha: true, antialias: true, preserveDrawingBuffer: true
+  });
+  var gl = context.gl;
+  gl.viewport(0, 0, cfg.width, cfg.height);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+
+  var scene = null, skeleton = null, state = null, skeletonData = null;
+  var currentAction = null, ready = false, loadError = null, boundsInfo = null;
+
+  function hexBg(hex) {
+    hex = String(hex).replace('#', '');
+    var r = parseInt(hex.slice(0, 2), 16) / 255;
+    var g = parseInt(hex.slice(2, 4), 16) / 255;
+    var b = parseInt(hex.slice(4, 6), 16) / 255;
+    var a = hex.length >= 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1;
+    return { r: r, g: g, b: b, a: a };
+  }
+
+  function fetchBuf(url) {
+    return fetch(url).then(function (r) { if (!r.ok) throw new Error('fetch ' + url + ' -> ' + r.status); return r.arrayBuffer(); });
+  }
+  function fetchText(url) {
+    return fetch(url).then(function (r) { if (!r.ok) throw new Error('fetch ' + url + ' -> ' + r.status); return r.text(); });
+  }
+
+  function collectBounds() {
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    var verts = new Float32Array(1024);
+    var drawOrder = skeleton.drawOrder;
+    for (var i = 0; i < drawOrder.length; i++) {
+      var slot = drawOrder[i];
+      var attachment = slot.getAttachment();
+      if (!attachment) continue;
+      var count = 0;
+      if (attachment instanceof spine.RegionAttachment) {
+        attachment.computeWorldVertices(slot.bone, verts, 0, 2);
+        count = 4;
+      } else if (attachment instanceof spine.VertexAttachment) {
+        count = attachment.worldVerticesLength >> 1;
+        attachment.computeWorldVertices(slot, 0, attachment.worldVerticesLength, verts, 0, 2);
+      }
+      for (var v = 0; v < count; v++) {
+        var x = verts[v * 2], y = verts[v * 2 + 1];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    return { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
+  }
+
+  function samplePoseAndCollectBounds() {
+    var union = null;
+    function add(b) {
+      if (!b || !isFinite(b.minX)) return;
+      if (!union) union = { minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY };
+      else {
+        union.minX = Math.min(union.minX, b.minX);
+        union.minY = Math.min(union.minY, b.minY);
+        union.maxX = Math.max(union.maxX, b.maxX);
+        union.maxY = Math.max(union.maxY, b.maxY);
+      }
+    }
+    skeleton.setToSetupPose();
+    skeleton.updateWorldTransform();
+    add(collectBounds());
+    var anims = skeletonData.animations;
+    for (var i = 0; i < anims.length; i++) {
+      var anim = anims[i];
+      if (anim.duration <= 0) continue;
+      var times = [0, anim.duration * 0.3, anim.duration * 0.6, anim.duration * 0.95];
+      for (var t = 0; t < times.length; t++) {
+        skeleton.setToSetupPose();
+        state.setAnimation(0, anim.name, true);
+        state.update(Math.max(0.0001, times[t]));
+        state.apply(skeleton);
+        skeleton.updateWorldTransform();
+        add(collectBounds());
+      }
+    }
+    return union || { minX: -100, minY: -100, maxX: 100, maxY: 100 };
+  }
+
+  function fitCamera() {
+    var bw = boundsInfo.maxX - boundsInfo.minX;
+    var bh = boundsInfo.maxY - boundsInfo.minY;
+    if (bw <= 0 || bh <= 0) { bw = Math.max(bw, 1); bh = Math.max(bh, 1); }
+    var scale = Math.min(cfg.width / bw, cfg.height / bh) * cfg.fit;
+    scene.camera.zoom = 1 / scale;
+    scene.camera.position.x = boundsInfo.minX + bw / 2;
+    scene.camera.position.y = boundsInfo.minY + bh / 2;
+    scene.camera.update();
+  }
+
+  function draw() {
+    var bg = hexBg(cfg.background);
+    gl.clearColor(bg.r, bg.g, bg.b, bg.a);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    scene.begin();
+    scene.drawSkeleton(skeleton, cfg.premultipliedAlpha);
+    scene.end();
+  }
+
+  var studio = {
+    config: cfg,
+    async load() {
+      try {
+        var skelBuf = await fetchBuf(cfg.skel);
+        var atlasText = await fetchText(cfg.atlas);
+        var pngSet = {};
+        atlasText.split(/\r?\n/).forEach(function (line) {
+          var m = line.match(/^([A-Za-z0-9_\-./]+\.png)\s*$/i);
+          if (m) pngSet[m[1]] = true;
+        });
+        var base = cfg.png.slice(0, cfg.png.lastIndexOf('/') + 1);
+        if (Object.keys(pngSet).length === 0) pngSet[cfg.png.split('/').pop()] = true;
+        var bitmaps = {};
+        var pngNames = Object.keys(pngSet);
+        for (var i = 0; i < pngNames.length; i++) {
+          var url = base + pngNames[i];
+          var r = await fetch(url);
+          if (!r.ok) {
+            var r2 = await fetch(cfg.png);
+            if (!r2.ok) throw new Error('fetch ' + url + ' -> ' + r.status);
+            bitmaps[pngNames[i]] = await createImageBitmap(await r2.blob());
+          } else {
+            bitmaps[pngNames[i]] = await createImageBitmap(await r.blob());
+          }
+        }
+        var atlas = new spine.TextureAtlas(atlasText, function (path) {
+          var bitmap = bitmaps[path];
+          if (!bitmap) throw new Error('no texture bitmap for ' + path);
+          var tex = new spine.webgl.GLTexture(context, bitmap);
+          tex.setFilters(spine.TextureFilter.Linear, spine.TextureFilter.Linear);
+          return tex;
+        });
+        var atlasLoader = new spine.AtlasAttachmentLoader(atlas);
+        skeletonData = new spine.SkeletonBinary(atlasLoader).readSkeletonData(new Uint8Array(skelBuf));
+        skeleton = new spine.Skeleton(skeletonData);
+        var stateData = new spine.AnimationStateData(skeletonData);
+        stateData.defaultMix = cfg.mix;
+        state = new spine.AnimationState(stateData);
+        scene = new spine.webgl.SceneRenderer(canvas, context, true);
+        scene.camera.setViewport(cfg.width, cfg.height);
+        boundsInfo = samplePoseAndCollectBounds();
+        fitCamera();
+        ready = true;
+        return {
+          ok: true,
+          animations: skeletonData.animations.map(function (a) { return { name: a.name, duration: a.duration }; }),
+          bounds: boundsInfo
+        };
+      } catch (err) {
+        loadError = String(err && err.stack || err);
+        return { ok: false, error: loadError };
+      }
+    },
+    step(params) {
+      if (!ready) throw new Error('studio not ready: ' + loadError);
+      var action = params.action;
+      var loop = !!params.loop;
+      var delta = typeof params.delta === 'number' ? params.delta : 1 / 30;
+      if (action !== currentAction) {
+        state.setAnimation(0, action, loop);
+        currentAction = action;
+      }
+      state.update(delta);
+      state.apply(skeleton);
+      skeleton.updateWorldTransform();
+      draw();
+      return { ok: true, action: currentAction };
+    },
+    reset() {
+      currentAction = null;
+      if (state) state.clearTracks();
+      return { ok: true };
+    },
+    snapshot() {
+      if (!ready) throw new Error('studio not ready');
+      return canvas.toDataURL('image/png');
+    },
+    ready() { return ready; },
+    error() { return loadError; }
+  };
+  window.studio = studio;
+})();
+</script>
+</body>
+</html>

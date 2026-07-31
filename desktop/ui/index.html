@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>明日方舟 Spine 自动动画工作室</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">◆</span>明日方舟 Spine 自动动画工作室<span class="ver">桌面版</span></div>
+  <div class="status">
+    <span id="chip-chrome" class="chip">Chrome …</span>
+    <span id="chip-ffmpeg" class="chip">FFmpeg …</span>
+    <span id="chip-key" class="chip">DeepSeek …</span>
+    <span id="chip-srv" class="chip">服务 …</span>
+  </div>
+  <button id="btn-settings" class="icon-btn" title="设置">⚙</button>
+</header>
+
+<nav class="tabs">
+  <button class="tab-btn active" data-tab="models">模型资源</button>
+  <button class="tab-btn" data-tab="generate">动画生成</button>
+  <button class="tab-btn" data-tab="timeline">时间轴</button>
+  <button class="tab-btn" data-tab="hi">高清化</button>
+  <button class="tab-btn" data-tab="jobs">任务与输出</button>
+</nav>
+
+<main>
+  <!-- ===================== 模型资源 ===================== -->
+  <section id="tab-models" class="tab active">
+    <div class="steps">
+      <div class="step"><span class="num">1</span>输入名称 / ID</div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="num">2</span>点「解析」</div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="num">3</span>选皮肤/视图 →「拉取三件套」</div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="num">4</span>点下方卡片选中模型</div>
+    </div>
+    <div class="card">
+      <h3>从 PRTS Wiki 拉取模型 <span class="hint">支持干员 / 异格 / 敌人 / 敌方领袖，含多皮肤与多视图</span></h3>
+      <div class="row">
+        <label class="radio"><input type="radio" name="kind" value="char" checked>干员 / 异格</label>
+        <label class="radio"><input type="radio" name="kind" value="enemy">敌人</label>
+      </div>
+      <div class="row wrap">
+        <input id="f-name" class="grow" placeholder="名称，如 阿米娅 / 近卫阿米娅 / 霜星 / 爱国者 / 弑君者">
+        <input id="f-key" class="grow" placeholder="或直接填模型 ID，如 char_1001_amiya2 / enemy_1505_frstar">
+        <button id="btn-resolve" class="primary">解析</button>
+      </div>
+      <div id="resolve-out" class="muted"></div>
+      <div id="skin-row" class="row wrap" hidden>
+        <select id="f-skin" class="grow"></select>
+        <select id="f-view" class="grow"></select>
+        <button id="btn-fetch" class="primary">拉取三件套</button>
+        <button id="btn-fetch-force" class="ghost" title="强制重新下载">强制重下</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>本地模型库 <button id="btn-refresh" class="ghost">刷新</button></h3>
+      <div id="model-list" class="model-grid"></div>
+    </div>
+  </section>
+
+  <!-- ===================== 动画生成 ===================== -->
+  <section id="tab-generate" class="tab">
+    <div class="steps">
+      <div class="step"><span class="num">1</span>在「模型资源」选择模型</div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="num">2</span>写下动作描述</div>
+      <div class="arrow">→</div>
+      <div class="step"><span class="num">3</span>开始生成并预览</div>
+    </div>
+    <div class="card">
+      <h3>当前模型</h3>
+      <div id="gen-model" class="muted">尚未选择模型 · <button class="ghost" id="btn-goto-models" type="button">去「模型资源」选择</button></div>
+      <div id="gen-anims" class="chips"></div>
+    </div>
+    <div class="card">
+      <h3>动作描述 <span class="hint">自然语言 → 智能动作编排（DeepSeek 有 Key 自动启用，否则离线关键词匹配）</span></h3>
+      <textarea id="g-prompt" rows="3" placeholder="例如：先睡觉，然后起来跑步，最后累趴下"></textarea>
+      <div id="g-templates" class="chips"></div>
+    </div>
+    <div class="card">
+      <h3>渲染参数</h3>
+      <div class="grid4">
+        <label>帧率 <select id="g-fps"><option>30</option><option>60</option></select></label>
+        <label>画布 <select id="g-size"><option>640x640</option><option>1280x1280</option><option>960x960</option></select></label>
+        <label>格式 <select id="g-format"><option value="gif">GIF（透明）</option><option value="mp4">MP4</option><option value="all">GIF+MP4</option></select></label>
+        <label>过渡 <select id="g-mix"><option value="0.2">0.2s</option><option value="0">硬切</option><option value="0.4">0.4s</option></select></label>
+        <label>背景 <input id="g-bg" value="00000000" title="RRGGBBAA，默认透明"></label>
+        <label>放大 <select id="g-upscale"><option value="1">1x 原图</option><option value="2">2x Lanczos</option><option value="4">4x Lanczos</option></select></label>
+        <label class="checkbox"><input id="g-sr" type="checkbox">AI 超分（Real-ESRGAN）</label>
+        <label>超分引擎 <select id="g-sr-engine"><option>realesrgan</option><option>waifu2x</option><option>realcugan</option></select></label>
+      </div>
+    </div>
+    <div class="row">
+      <button id="btn-run" class="primary big">▶ 开始生成</button>
+      <span id="run-status" class="muted"></span>
+    </div>
+    <div id="run-progress" hidden>
+      <progress id="run-progress-bar" max="100" value="0"></progress>
+      <div id="run-progress-text" class="muted"></div>
+    </div>
+    <div id="run-log" class="log" hidden></div>
+    <div id="run-result" class="card" hidden></div>
+  </section>
+
+  <!-- ===================== 时间轴 ===================== -->
+  <section id="tab-timeline" class="tab">
+    <p class="hint" style="margin:0 0 8px">💡 先去「动画生成」跑一次，这里会出现分镜列表；修改时长 / 循环 / 倍速后点「仅重渲染」即可复用当前模型与参数，无需重新生成。</p>
+    <div class="card">
+      <h3>最近一次编排时间轴 <span class="hint">可直接修改时长 / 循环 / 倍速后重新渲染</span></h3>
+      <div id="tl-empty" class="muted">还没有时间轴，先去「动画生成」跑一次。</div>
+      <table id="tl-table" hidden>
+        <thead><tr><th>动作</th><th>时长 (s)</th><th>循环</th><th>倍速</th><th>描述</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="row" id="tl-actions" hidden>
+        <button id="btn-tl-render" class="primary">仅重渲染（使用修改后的时间轴）</button>
+        <button id="btn-tl-copy" class="ghost">复制 JSON</button>
+        <span id="tl-info" class="muted"></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 高清化 ===================== -->
+  <section id="tab-hi" class="tab">
+    <p class="hint" style="margin:0 0 8px">💡 推荐流程：① 生成 4 方案对比图（只裁一小块，很快）→ ② 点选看着最舒服的方案 → ③ 执行整图高清化。避免整图跑完才发现效果不理想、白等。</p>
+    <div class="card">
+      <h3>① 方案对比 <span class="hint">同一局部区域 × 4 种方案并排对比（灰=原图 蓝=Lanczos 绿=Real-ESRGAN 紫=Waifu2x）</span></h3>
+      <div class="row wrap">
+        <select id="h-model" class="grow"></select>
+        <label>倍数 <select id="h-scale"><option value="2">2x</option><option value="4">4x</option></select></label>
+        <button id="btn-compare" class="primary">生成方案对比</button>
+        <span id="cmp-info" class="muted"></span>
+      </div>
+      <div id="h-compare-wrap" hidden>
+        <img id="h-compare-img" alt="方案对比图" style="width:100%;max-width:880px;border-radius:10px;background:#0d1117">
+        <div class="hi-plans" id="h-plans"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>② 执行高清化 <span class="hint">点选上方方案后自动带参；也可手动勾选 AI 超分直接执行</span></h3>
+      <div class="row wrap">
+        <label class="checkbox"><input id="h-sr" type="checkbox">AI 超分</label>
+        <select id="h-sr-engine"><option>realesrgan</option><option>waifu2x</option><option>realcugan</option></select>
+        <button id="btn-hi" class="primary">开始高清化</button>
+        <span id="hi-plan-tag" class="muted"></span>
+      </div>
+      <div id="hi-info" class="muted"></div>
+    </div>
+    <div id="hi-log" class="log" hidden></div>
+    <div id="hi-result" class="card" hidden>
+      <h3>执行结果</h3>
+      <div class="compare">
+        <figure><figcaption>原图</figcaption><img id="hi-before" alt="原图"></figure>
+        <figure><figcaption>高清化后</figcaption><img id="hi-after" alt="高清化"></figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== 任务与输出 ===================== -->
+  <section id="tab-jobs" class="tab">
+    <p class="hint" style="margin:0 0 8px">💡 生成完成的 GIF/MP4 会列在这里（也可在项目 out/ 目录找到）；「任务历史」保留每次任务的日志，便于排查。</p>
+    <div class="card">
+      <h3>输出记录 <button id="btn-refresh-out" class="ghost">刷新</button></h3>
+      <div id="out-list" class="out-grid"></div>
+    </div>
+    <div class="card">
+      <h3>任务历史</h3>
+      <div id="job-list"></div>
+    </div>
+  </section>
+
+<!-- ===================== 设置面板 ===================== -->
+<div id="settings-overlay" class="overlay" hidden>
+  <div class="modal">
+    <div class="modal-head"><h3>设置</h3><button id="btn-settings-close" class="ghost">✕</button></div>
+    <div class="card">
+      <h4>DeepSeek 智能编排（可选）</h4>
+      <p class="hint" style="margin-left:0">不填也能用：自动降级为「离线关键词编排」。填写后，动作描述将由 DeepSeek 智能匹配与分镜。Key 仅保存在本机 <code>config.json</code>，不会上传。模型默认 <code>deepseek-v4-flash</code>（DeepSeek-V4-Flash 正式版），API 地址默认 <code>https://api.deepseek.com</code>，推荐保持默认。</p>
+      <div class="row wrap">
+        <label style="flex:2;min-width:280px">API Key
+          <span class="row" style="margin:0"><input id="cfg-key" type="password" class="grow" placeholder="sk-...（在 platform.deepseek.com 创建）" autocomplete="off">
+          <button id="cfg-key-toggle" class="ghost" type="button">显示</button></span>
+        </label>
+        <label title="推荐保持默认：deepseek-v4-flash（DeepSeek-V4-Flash 正式版）">模型<input id="cfg-model" value="deepseek-v4-flash" placeholder="deepseek-v4-flash"></label>
+        <label style="flex:2;min-width:240px">API 地址<input id="cfg-baseurl" value="https://api.deepseek.com" placeholder="https://api.deepseek.com"></label>
+      </div>
+      <div class="row wrap">
+        <button id="btn-cfg-test" class="primary">测试连接</button>
+        <button id="btn-cfg-save" class="primary">保存</button>
+        <button id="btn-cfg-clear" class="ghost">清除 Key</button>
+        <span id="cfg-status" class="muted"></span>
+      </div>
+      <div class="muted" style="margin-top:6px;font-size:12px">当前状态：<span id="cfg-current"></span> · 配置文件：<span id="cfg-file" style="font-family:var(--mono)"></span></div>
+    </div>
+    <div class="card">
+      <h4>关于</h4>
+      <div class="muted">明日方舟 Spine 自动动画工作室 · 桌面版 v1.0<br>本地服务 127.0.0.1:4879 · 数据与输出保存在项目目录（out/）</div>
+    </div>
+  </div>
+</div>
+
+</main>
+
+<footer>本地服务 127.0.0.1:4879 · 仅本机访问 · 数据与输出保存在项目目录</footer>
+<script src="app.js"></script>
+</body>
+</html>
