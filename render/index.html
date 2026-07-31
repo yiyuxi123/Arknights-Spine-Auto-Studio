@@ -221,7 +221,7 @@
         currentView = views[0] || null;
         fitCamera();
         ready = true;
-        return { ok: true, views: views.map(function (v) { return { name: v.key, animations: v.animations }; }), bounds: unionBounds };
+        return { ok: true, views: views.map(function (v) { return { name: v.key, animations: v.animations }; }), animations: views.length ? views[0].animations : [], bounds: unionBounds };
       } catch (err) {
         loadError = String(err && err.stack || err);
         return { ok: false, error: loadError };

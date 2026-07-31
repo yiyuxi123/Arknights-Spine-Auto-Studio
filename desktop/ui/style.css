@@ -597,3 +597,11 @@ button.danger:hover { background: rgba(255, 123, 123, 0.1); border-color: var(--
 .perf-proc .mono { font-family: var(--mono); color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .perf-proc .mono i { font-style: normal; color: var(--muted); font-size: 10px; }
 @media (max-width: 860px) { .perf-grid { grid-template-columns: 1fr; } }
+
+/* ---------- work-set multi-select ---------- */
+.m-view { display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 5px 8px; border-radius: 8px; transition: background .15s; }
+.m-view:hover { background: rgba(92,179,255,.1); }
+.m-view.sel { background: rgba(92,179,255,.14); }
+.m-view.selw { outline: 1px solid rgba(180,120,255,.6); background: rgba(180,120,255,.10); }
+.m-sel { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 18px; height: 18px; }
+.m-sel input { width: 15px; height: 15px; accent-color: #b478ff; cursor: pointer; }

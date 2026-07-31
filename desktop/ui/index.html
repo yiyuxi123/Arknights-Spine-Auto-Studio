@@ -84,6 +84,11 @@
   <input id="model-search" class="grow" placeholder="🔍 搜索角色 / ID / 皮肤 / 视图，如：阿米娅、skadi、泳装、KFC…">
   <span class="muted" id="model-count"></span>
 </div>
+            <div id="work-set-bar" class="row wrap" hidden style="margin:8px 0 10px;padding:8px 12px;border:1px solid rgba(92,179,255,.35);border-radius:10px;background:rgba(92,179,255,.07)">
+        <span class="ok-inline">📌 工作集：<span id="work-set-list"></span></span>
+        <span class="muted">勾选多套模型后，高清化 / 预览 / 时间轴生成将一起使用它们（视图拼贴）</span>
+        <button id="btn-work-clear" class="ghost" style="margin-left:auto">清空工作集</button>
+      </div>
       <div id="model-list" class="model-grid"></div>
     </div>
   </section>

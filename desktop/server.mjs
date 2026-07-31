@@ -314,11 +314,29 @@ function cachedModels() {
       let skinLabel = base === d.name ? '默认' : base;
       let viewLabel = '';
       if (meta && meta.skin && typeof meta.skin === 'object') {
+        // 同名视图重命后的后缀（如 _back_2）：第一轮精确匹配，第二轮按方向标签匹配
+        const TAG_TO_VIEW = { front: '正面', back: '背面', build: '基建', battle: '战斗', default: '默认' };
+        const tagM = base.match(/^(.+?)_(front|back|build|battle|default)_\d+$/);
+        const stripped = tagM ? tagM[1] : base;
+        const wantView = tagM ? TAG_TO_VIEW[tagM[2]] : null;
+        let found = null;
         for (const [sname, views] of Object.entries(meta.skin)) {
           for (const [vname, f] of Object.entries(views || {})) {
-            if (String(f?.file || '') === base) { skinLabel = sname; viewLabel = vname; }
+            const fbase = String(f?.file || '').split(/[\\/]/).pop();
+            if (fbase === base) { found = { skinLabel: sname, viewLabel: vname }; break; }
+          }
+          if (found) break;
+        }
+        if (!found) {
+          for (const [sname, views] of Object.entries(meta.skin)) {
+            for (const [vname, f] of Object.entries(views || {})) {
+              const fbase = String(f?.file || '').split(/[\\/]/).pop();
+              if (fbase === stripped && (!wantView || vname === wantView)) { found = { skinLabel: sname, viewLabel: vname }; break; }
+            }
+            if (found) break;
           }
         }
+        if (found) { skinLabel = found.skinLabel; viewLabel = found.viewLabel; }
       }
       if (skinLabel === base) {
         const prefix = 'build_' + d.name;

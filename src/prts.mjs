@@ -307,8 +307,17 @@ const ENRICH_MSG = '[prts] \u8d44\u6599\u5df2\u8865\u5168\uff1a';
 const ENRICH_SKIP = '[prts] \u8d44\u6599\u8865\u5168\u8df3\u8fc7\uff1a';
 const ART_SKIP = '[prts] \u7f8e\u672f\u4e0b\u8f7d\u8df3\u8fc7\uff1a';
 
-async function downloadView({ charId, meta, kind, skinKey, viewKey, file, targetDir, prefix, force, onLog }) {
-  const base = basename(file);
+const VIEW_TAG = { '\u6b63\u9762': 'front', '\u80cc\u9762': 'back', '\u57fa\u5efa': 'build', '\u6218\u6597': 'battle', '\u9ed8\u8ba4': 'default' };
+
+async function downloadView({ charId, meta, kind, skinKey, viewKey, file, targetDir, prefix, force, onLog, usedBases, tag = '' }) {
+  const rawBase = basename(file);
+  let base = rawBase;
+  let renamed = false;
+  if (usedBases && usedBases.has(rawBase) && tag) {
+    base = rawBase + tag;
+    renamed = true;
+  }
+  if (usedBases) usedBases.add(rawBase);
   const files = { skel: join(targetDir, base + '.skel'), atlas: join(targetDir, base + '.atlas') };
   for (const ext of EXTS) {
     const url = `${prefix}${file}${ext}`;
@@ -322,17 +331,29 @@ async function downloadView({ charId, meta, kind, skinKey, viewKey, file, target
     await writeFile(target, bytes);
     if (onLog) onLog(OK_MSG + basename(target) + '  ' + (bytes.length / 1024).toFixed(0) + KB_MSG);
   }
-  const atlasText = (await readFile(files.atlas, 'utf8')).toString();
+  const rawAtlasText = (await readFile(files.atlas, 'utf8')).toString();
+  const origPages = listAtlasPages(rawAtlasText);
+  if (origPages.length === 0) throw new Error(ATLAS_ERR + files.atlas);
+  let atlasText = rawAtlasText;
+  if (renamed) {
+    atlasText = rawAtlasText.replace(/^([A-Za-z0-9_\-.\/]+\.png)\s*$/gm, (m0, pname) => {
+      const nm = pname.split('/').pop();
+      return pname.replace(nm, nm.replace(/\.png$/i, tag + '.png'));
+    });
+    await writeFile(files.atlas, atlasText);
+  }
   const pages = listAtlasPages(atlasText);
-  if (pages.length === 0) throw new Error(ATLAS_ERR + files.atlas);
-  for (const page of pages) {
-    const target = join(targetDir, page);
-    if (!force && (await existsFile(target))) { if (onLog) onLog(SKIP_MSG + page + '\uff0c\u8df3\u8fc7'); continue; }
-    const url = `${prefix}${file.replace(/[^/]*$/, '')}${page}`;
+  for (let pi = 0; pi < pages.length; pi++) {
+    const page = pages[pi];
+    const localName = page;
+    const urlPage = origPages[pi] ?? page;
+    const target = join(targetDir, localName);
+    if (!force && (await existsFile(target))) { if (onLog) onLog(SKIP_MSG + localName + '\uff0c\u8df3\u8fc7'); continue; }
+    const url = `${prefix}${file.replace(/[^/]*$/, '')}${urlPage}`;
     if (onLog) onLog(DOWN_MSG + url);
     const bytes = await fetchBytes(url);
     await writeFile(target, bytes);
-    if (onLog) onLog(OK_MSG + page + '  ' + (bytes.length / 1024).toFixed(0) + KB_MSG);
+    if (onLog) onLog(OK_MSG + localName + '  ' + (bytes.length / 1024).toFixed(0) + KB_MSG);
   }
   try {
     const { alignAssetsInPlace } = await import('./align.mjs');
@@ -399,7 +420,7 @@ export async function fetchCharacterFromPrts({ character, key, enemy, skin, view
   const targetDir = resolve(outDir, charId);
   await mkdir(targetDir, { recursive: true });
   const prefix = meta.prefix;
-  const v = await downloadView({ charId, meta, kind, skinKey: chosen.skin, viewKey: chosen.view, file: chosen.file, targetDir, prefix, force, onLog });
+  const v = await downloadView({ charId, meta, kind, skinKey: chosen.skin, viewKey: chosen.view, file: chosen.file, targetDir, prefix, force, onLog, usedBases: new Set() });
   const result = {
     skel: v.skel, atlas: v.atlas, png: v.png, dir: targetDir,
     characterName: meta.name ?? charId, charId, kind, skin: chosen.skin, view: chosen.view,
@@ -430,11 +451,13 @@ export async function fetchAllViewsFromPrts({ character, key, enemy, skin, outDi
   await mkdir(targetDir, { recursive: true });
   const prefix = meta.prefix;
   const all = [];
+  const usedBases = new Set();
   for (const viewKey of viewNames) {
     const file = views[viewKey]?.file ?? null;
     if (!file) { if (onLog) onLog('[prts] \u89c6\u56fe\u300c' + viewKey + '\u300d' + VIEW_NO_FILE); continue; }
     try {
-      const v = await downloadView({ charId, meta, kind, skinKey, viewKey, file, targetDir, prefix, force, onLog });
+      const tag = '_' + (VIEW_TAG[viewKey] || 'v') + '_' + String(viewNames.indexOf(viewKey));
+      const v = await downloadView({ charId, meta, kind, skinKey, viewKey, file, targetDir, prefix, force, onLog, usedBases, tag });
       all.push(v);
     } catch (e) { if (onLog) onLog('[prts] ' + VIEW_FAIL + viewKey + VIEW_FAIL2 + e.message); }
   }

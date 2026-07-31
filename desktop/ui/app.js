@@ -393,17 +393,27 @@ $$('#flow-bar .flow-step').forEach((el) => {
 function currentAssets() {
   const m = state.current;
   if (!m) return null;
-  if (state.assetSet && state.assetSet.modelId === m.id) {
-    return { skel: state.assetSet.skel, atlas: state.assetSet.atlas, png: state.assetSet.png, label: state.assetSet.label, isHi: true };
+  const set = state.assetSets && state.assetSets[m.id] ? state.assetSets[m.id] : (state.assetSet && state.assetSet.modelId === m.id ? state.assetSet : null);
+  if (set) {
+    return { skel: set.skel, atlas: set.atlas, png: set.png, label: set.label, isHi: true };
   }
   return { skel: m.files?.skel, atlas: m.files?.atlas, png: m.files?.png, label: '原图', isHi: false };
 }
 function setAssetSet(modelId, set) {
-  state.assetSet = set ? { modelId, ...set } : null;
+  if (!modelId) return;
+  if (set) state.assetSets = { ...(state.assetSets || {}), [modelId]: set };
+  else {
+    const next = { ...(state.assetSets || {}) };
+    delete next[modelId];
+    state.assetSets = next;
+  }
+  if (state.current && state.current.id === modelId) {
+    state.assetSet = set ? { modelId, ...set } : null;
+  }
   // 资源变化 → 预览与旧时间轴可能不匹配，提示重新生成
   state.previews = null;
   $('#pv-grid').innerHTML = '';
-  $('#pv-info').textContent = state.assetSet ? '资源已切换，请重新生成动作预览' : '';
+  $('#pv-info').textContent = Object.keys(state.assetSets || {}).length ? '资源已切换，请重新生成动作预览' : '';
   updateAssetViews();
 }
 function updateAssetViews() {
@@ -597,21 +607,33 @@ function groupModels(filter) {
 function kindOf(m) {
   return m.kind === 'enemy' ? 'enemy' : m.kind === 'build' ? 'build' : 'char';
 }
-function collectModelViews(m) {
+function viewNameOf(m) {
+  return m.viewLabel || m.base || m.id;
+}
+// 工作集：用户勾选的模型；未勾选时回退到当前模型同皮肤视图
+function workingModels() {
+  if (state.selection && state.selection.length) {
+    return state.selection.map((id) => state.models.find((x) => x.id === id)).filter(Boolean);
+  }
+  const m = state.current;
   if (!m) return [];
+  const skin = m.skinLabel || '默认';
+  return state.models.filter((x) => x.groupId === m.groupId && (x.skinLabel || '默认') === skin);
+}
+function workingViews() {
   const seen = new Set();
   const out = [];
-  for (const x of state.models) {
-    if (x.groupId !== m.groupId) continue;
-    const key = x.base || x.viewLabel || '';
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (x.files && x.files.skel && x.files.atlas && x.files.png) {
-      out.push({ view: x.viewLabel || x.base || '', files: x.files, animations: x.animations || [] });
-    }
+  for (const m of workingModels()) {
+    if (!m.files || !m.files.skel || !m.files.atlas || !m.files.png) continue;
+    let name = viewNameOf(m);
+    if (seen.has(name)) name = name + ' · ' + m.base;
+    seen.add(name);
+    out.push({ view: name, files: m.files, animations: m.animations || [] });
   }
-  if (!out.length && m.files) out.push({ view: m.viewLabel || '', files: m.files, animations: m.animations || [] });
   return out;
+}
+function workingCount() {
+  return workingModels().length;
 }
 function renderDirFilters() {
   const kinds = [
@@ -744,10 +766,23 @@ function renderModels() {
           rows.className = 'm-views';
           for (const e of bySkin.get(sk)) {
             const row = document.createElement('div');
-            row.className = 'm-view' + (state.current?.id === e.id ? ' sel' : '');
-            row.innerHTML = '<div class="m-view-main"><b>' + escapeHtml(modelEntryLabel(e)) + '</b><span class="muted">' + escapeHtml(e.base) + '</span></div>' +
+            const inSel = (state.selection || []).includes(e.id);
+            row.className = 'm-view' + (state.current?.id === e.id ? ' sel' : '') + (inSel ? ' selw' : '');
+            row.innerHTML = '<label class="m-sel" title="勾选加入工作集（可多套拼贴）"><input type="checkbox" class="sel-chk" ' + (inSel ? 'checked' : '') + '></label>' +
+              '<div class="m-view-main"><b>' + escapeHtml(modelEntryLabel(e)) + '</b><span class="muted">' + escapeHtml(e.base) + '</span></div>' +
               '<div class="m-view-stat">' + escapeHtml(animStat(e)) + (e.viewLabel ? '<span class="tag mini">' + escapeHtml(e.viewLabel) + '</span>' : '') + '</div>';
-            row.title = '选择：' + e.name + '（' + e.base + '）';
+            row.title = '点击行 = 单选；勾选 = 加入工作集';
+            row.querySelector('.sel-chk').addEventListener('click', (ev) => { ev.stopPropagation(); });
+            row.querySelector('.sel-chk').addEventListener('change', (ev) => {
+              if (ev.target.checked) {
+                if (!(state.selection || []).includes(e.id)) { state.selection = [...(state.selection || []), e.id]; }
+                selectModel(e);
+              } else {
+                state.selection = (state.selection || []).filter((id) => id !== e.id);
+                renderModels();
+                updateWorkSetUI();
+              }
+            });
             row.addEventListener('click', (ev) => { ev.stopPropagation(); selectModel(e); });
             rows.appendChild(row);
           }
@@ -765,8 +800,28 @@ function renderModels() {
 }
 
 
+function updateWorkSetUI() {
+  const bar = $('#work-set-bar');
+  const list = $('#work-set-list');
+  const sel = state.selection || [];
+  if (bar) {
+    bar.hidden = !sel.length;
+    if (list) {
+      const names = sel.map((id) => {
+        const m = state.models.find((x) => x.id === id);
+        return m ? (m.name || '') + ' · ' + (m.viewLabel || m.base || '') : id;
+      });
+      list.textContent = names.join(' / ');
+    }
+  }
+  const btn = $('#btn-hi');
+  const n = workingCount();
+  if (btn) btn.textContent = n > 1 ? '开始高清化（工作集 ' + n + ' 套）' : '开始高清化';
+}
 function selectModel(m) {
   if (!m) return;
+  // 单选：点击行时清空工作集勾选（checkbox 独立控制）
+  if (!state.selection?.includes(m.id)) state.selection = [];
   if (state.current?.id !== m.id) {
     // 切换模型：清空高清化资源、预览与时间轴，避免串模型
     const hadPrev = !!state.previews;
@@ -785,12 +840,15 @@ function selectModel(m) {
   state.current = m;
   renderModels();
   renderHiModelSelect();
+  updateWorkSetUI();
   const fullName = m.name + ' · ' + modelEntryLabel(m);
-  const label = state.assetSet?.label || '原图';
-  $('#gen-model').innerHTML = '<b>' + escapeHtml(fullName) + '</b>（' + escapeHtml(m.groupId || m.id) + '）';
+  const label = currentAssets()?.label || '原图';
+  const wsN = workingCount();
+  const wsTag = wsN > 1 ? '<span class="tag mini" style="margin-left:6px">工作集 ' + wsN + ' 套视图</span>' : '';
+  $('#gen-model').innerHTML = '<b>' + escapeHtml(fullName) + '</b>（' + escapeHtml(m.groupId || m.id) + '）' + wsTag;
   $('#gen-res').textContent = '资源：' + label;
-  $('#tl-model').innerHTML = '<b>' + escapeHtml(fullName) + '</b>（' + escapeHtml(m.groupId || m.id) + '）';
-  $('#tl-res').textContent = '资源：' + label + '（预览与生成都将使用这套资源）';
+  $('#tl-model').innerHTML = '<b>' + escapeHtml(fullName) + '</b>（' + escapeHtml(m.groupId || m.id) + '）' + wsTag;
+  $('#tl-res').textContent = '资源：' + label + '（预览与生成都将使用这些资源）';
   $('#hi-model-state').innerHTML = '<b>' + escapeHtml(fullName) + '</b>（' + escapeHtml(m.groupId || m.id) + '）';
   $('#hi-res-state').textContent = '资源：' + label;
   const anims = $('#gen-anims');
@@ -808,6 +866,11 @@ function updateModelCount() {
   el.textContent = n ? '共 ' + n + ' 个角色' : '';
 }
 $('#model-search')?.addEventListener('input', () => { renderModels(); updateModelCount(); });
+$('#btn-work-clear')?.addEventListener('click', () => {
+  state.selection = [];
+  renderModels();
+  updateWorkSetUI();
+});
 
 function renderHiModelSelect() {
   const sel = $('#h-model');
@@ -873,7 +936,7 @@ $('#btn-preview').addEventListener('click', async () => {
   const mode = document.querySelector('input[name=pv-mode]:checked')?.value || 'anim';
   $('#pv-info').textContent = '⏳ 正在' + (mode === 'anim' ? '渲染完整动画预览' : '截取单帧快照') + '（' + (m.animations || []).length + ' 个动作，使用原始资源）…';
   try {
-    const mv = collectModelViews(m);
+    const mv = workingViews();
     const pvBody = mv.length > 1
       ? { views: mv.map((v) => ({ view: v.view, skel: v.files.skel, atlas: v.files.atlas, png: v.files.png })), outName: m.name, mode, modelId: m.id }
       : { skel: assets.skel, atlas: assets.atlas, png: assets.png, view: mv[0]?.view || '', outName: m.name, mode, modelId: m.id };
@@ -1028,7 +1091,7 @@ function renderQueue() {
     bar.appendChild(blk);
   });
   box.innerHTML = '';
-  const tlViews = collectModelViews(state.current);
+  const tlViews = workingViews();
   q.forEach((seg, i) => {
     const row = document.createElement('div');
     row.className = 'tl-row';
@@ -1172,11 +1235,11 @@ $('#btn-run').addEventListener('click', async () => {
     mode: 'edited',
   };
   body.timeline = state.lastTimeline;
-  const mvAll = collectModelViews(state.current);
+  const mvAll = workingViews();
   if (mvAll.length > 1) {
-    const hi = state.assetSet && state.assetSet.modelId === state.current.id ? state.assetSet : null;
     body.assetsList = mvAll.map((v) => {
-      const use = hi && hi.skel === v.files.skel ? hi : v.files;
+      const hi = Object.values(state.assetSets || {}).find((s) => s.skel === v.files.skel);
+      const use = hi || v.files;
       return { name: v.view || 'default', skel: use.skel, atlas: use.atlas, png: use.png };
     });
   }
@@ -1337,9 +1400,14 @@ $('#btn-compare').addEventListener('click', async () => {
 });
 
 $('#btn-hi').addEventListener('click', async () => {
-  const m = state.models.find((x) => x.id === $('#h-model').value);
-  if (!m || !m.files.atlas || !m.files.png) {
-    $('#hi-info').textContent = '❌ 该模型缺少 atlas/png，请先拉取完整三件套';
+  const targets = workingModels();
+  if (!targets.length) {
+    $('#hi-info').textContent = '❌ 请先在模型库选择模型（可勾选多套形成工作集）';
+    return;
+  }
+  const bad = targets.find((m) => !m.files || !m.files.atlas || !m.files.png);
+  if (bad) {
+    $('#hi-info').textContent = '❌ ' + bad.name + ' 缺少 atlas/png，请先拉取完整三件套';
     return;
   }
   $('#hi-info').textContent = '';
@@ -1348,36 +1416,54 @@ $('#btn-hi').addEventListener('click', async () => {
   $('#hi-result').hidden = true;
   $('#btn-hi').disabled = true;
   const showImg = (id, url) => { const img = $(id); if (img) img.src = url; };
+  const scale = $('#h-scale').value;
+  const srOn = $('#h-sr').checked;
+  const srEngine = $('#h-sr-engine').value;
+  const label = '高清化' + scale + 'x' + (srOn ? ' + AI(' + srEngine + ')' : '');
+  let done = 0, failed = 0;
   try {
-    const { jobId } = await api('/api/upscale', {
-      atlas: m.files.atlas, png: m.files.png,
-      scale: $('#h-scale').value, sr: $('#h-sr').checked, srEngine: $('#h-sr-engine').value,
-      outName: m.name,
-    });
-    state.activeJob = jobId;
-    const result = await waitJob(jobId);
-    $('#hi-result').hidden = false;
-    showImg('#hi-before', assetUrl(m.files.png));
-    const png = result.files.find((f) => f.kind === 'png');
-    const atlas = result.files.find((f) => f.kind === 'atlas');
-    if (png) showImg('#hi-after', png.url);
-    $('#hi-info').textContent = '输出：' + result.outDir;
+    for (const m of targets) {
+      $('#hi-info').textContent = '⚠️ 高清化 ' + (done + failed + 1) + '/' + targets.length + '：' + m.name + ' · ' + (m.viewLabel || m.base || '');
+      const { jobId } = await api('/api/upscale', {
+        atlas: m.files.atlas, png: m.files.png,
+        scale, sr: srOn, srEngine,
+        outName: m.name,
+      });
+      state.activeJob = jobId;
+      const result = await waitJob(jobId);
+      const png = result.files.find((f) => f.kind === 'png');
+      const atlas = result.files.find((f) => f.kind === 'atlas');
+      if (png && atlas) {
+        setAssetSet(m.id, { skel: m.files.skel, atlas: atlas.path, png: png.path, label });
+        $('#hi-log').innerHTML += '<div class="ok">✅ ' + escapeHtml(m.name + ' · ' + (m.viewLabel || m.base || '')) + ' 高清化完成</div>';
+        done++;
+        if (done === targets.length) {
+          $('#hi-result').hidden = false;
+          showImg('#hi-before', assetUrl(targets[0].files.png));
+          showImg('#hi-after', png.url);
+        }
+      } else {
+        $('#hi-log').innerHTML += '<div class="err">❌ ' + escapeHtml(m.name || '') + ' 高清化产物缺少文件</div>';
+        failed++;
+      }
+    }
+    $('#hi-info').textContent = '完成：' + done + ' 套成功' + (failed ? '，' + failed + ' 套失败' : '') + '，已自动采用到工作集';
     const useBtn = $('#btn-hi-use');
     useBtn.hidden = false;
     useBtn.onclick = () => {
-      if (!png || !atlas) { $('#hi-use-info').textContent = '❌ 高清化产物缺少文件'; return; }
-      setAssetSet(m.id, { skel: m.files.skel, atlas: atlas.path, png: png.path, label: '高清化 x' + $('#h-scale').value + ($('#h-sr').checked ? ' + AI(' + $('#h-sr-engine').value + ')' : '') });
-      $('#hi-use-info').textContent = '✅ 已采用，后续预览 / 生成将使用这套高清资源';
+      $('#hi-use-info').textContent = '✅ 已采用 ' + done + ' 套高清资源，后续预览 / 生成将使用它们';
     };
   } catch (err) {
     $('#hi-log').innerHTML += '<div class="err">' + escapeHtml(err.message) + '</div>';
   } finally {
     $('#btn-hi').disabled = false;
+    updateWorkSetUI();
   }
 });
 
 $('#btn-hi-skip').addEventListener('click', () => {
-  if (state.current) setAssetSet(state.current.id, null);
+  const targets = workingModels();
+  for (const m of targets) setAssetSet(m.id, null);
   $('#hi-use-info').textContent = '已使用原图资源';
 });
 
