@@ -15,6 +15,7 @@
     <span id="chip-chrome" class="chip">Chrome …</span>
     <span id="chip-ffmpeg" class="chip">FFmpeg …</span>
     <span id="chip-key" class="chip">DeepSeek …</span>
+    <span id="chip-vision" class="chip">千问视觉 …</span>
     <span id="chip-srv" class="chip">服务 …</span>
   </div>
   <button id="btn-settings" class="icon-btn" title="设置">⚙</button>
@@ -131,9 +132,12 @@
     </div>
 
     <div class="card">
-      <h3>① 动作预览 <span class="hint">先看看每个动作长什么样，再决定怎么编排；不预览也能直接手动排布</span></h3>
+      <h3>① 动作预览与标注 <span class="hint">先看每个动作长什么样；预览固定用原始资源（快），高清化资源只用于最终生成</span></h3>
       <div class="row wrap">
-        <button id="btn-preview" class="primary">生成动作预览图</button>
+        <label class="radio"><input type="radio" name="pv-mode" value="anim" checked>🎬 完整动画（慢但直观）</label>
+        <label class="radio"><input type="radio" name="pv-mode" value="frame">⚡ 单帧快照（最快）</label>
+        <button id="btn-preview" class="primary">生成动作预览</button>
+        <button id="btn-label" class="ghost" title="离线规则 + 千问视觉看图自动打标，结果存入本地动作字典">🤖 AI 自动标注</button>
         <span id="pv-info" class="muted"></span>
       </div>
       <div id="pv-grid" class="pv-grid"></div>
@@ -233,9 +237,28 @@
       </div>
       <div class="muted" style="margin-top:6px;font-size:12px">当前状态：<span id="cfg-current"></span> · 配置文件：<span id="cfg-file" style="font-family:var(--mono)"></span></div>
     </div>
+    <div class="card" style="border-color:rgba(167,139,250,0.45)">
+      <h4>千问视觉标注（可选）</h4>
+      <p class="hint" style="margin-left:0">让通义千问 Qwen-VL 看图自动识别每个动作在做什么（解决 <code>special_01</code> 这类乱码动作名），结果存入本地动作字典，之后 DeepSeek 编排就能看懂。不填则只用离线规则猜测 + 你手动标注。<b>三档模式：不配置任何 Key（纯离线）/ 只配 DeepSeek（半自动）/ 双 Key（全自动）</b>。</p>
+      <div class="row wrap">
+        <label style="flex:2;min-width:280px">DashScope API Key
+          <span class="row" style="margin:0"><input id="cfg-vkey" type="password" class="grow" placeholder="sk-...（在 bailian.console.aliyun.com 创建）" autocomplete="off">
+          <button id="cfg-vkey-toggle" class="ghost" type="button">显示</button></span>
+        </label>
+        <label title="默认 qwen-vl-max，也可用 qwen-vl-plus / qwen2.5-vl-72b-instruct">视觉模型<input id="cfg-vmodel" value="qwen-vl-max" placeholder="qwen-vl-max"></label>
+        <label style="flex:2;min-width:240px">API 地址<input id="cfg-vbaseurl" value="https://dashscope.aliyuncs.com/compatible-mode/v1" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"></label>
+      </div>
+      <div class="row wrap">
+        <button id="btn-cfg-vtest" class="primary">测试连接</button>
+        <button id="btn-cfg-vsave" class="primary">保存</button>
+        <button id="btn-cfg-vclear" class="ghost">清除视觉 Key</button>
+        <span id="cfg-vstatus" class="muted"></span>
+      </div>
+      <div class="muted" style="margin-top:6px;font-size:12px">当前状态：<span id="cfg-vcurrent"></span></div>
+    </div>
     <div class="card">
       <h4>关于</h4>
-      <div class="muted">明日方舟 Spine 自动动画工作室 · 桌面版 v1.0.4<br>本地服务 127.0.0.1:4879 · 数据与输出保存在项目目录（out/）</div>
+      <div class="muted">明日方舟 Spine 自动动画工作室 · 桌面版 v1.1.0<br>本地服务 127.0.0.1:4879 · 数据与输出保存在项目目录（out/）<br>模型资源：assets/（原始三件套）与 out/hi/（高清化资源）分开存放，原图永不被覆盖</div>
     </div>
   </div>
 </div>

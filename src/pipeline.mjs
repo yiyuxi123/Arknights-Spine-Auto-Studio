@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { parseSkeleton } from './skel.mjs';
-import { choreograph } from './choreograph.mjs';
+import { choreograph, validateTimeline } from './choreograph.mjs';
 import { renderTimelineToGif } from './render.mjs';
 import { encodePng } from './png.mjs';
 import { loadManifest, findCharacter, downloadCharacter } from './download.mjs';
@@ -264,12 +264,12 @@ async function cmdRun(args) {
     if (!Array.isArray(saved.timeline) || saved.timeline.length === 0) {
       throw new Error('时间轴文件缺少 timeline 数组: ' + args.timeline);
     }
-    plan = {
+    plan = validateTimeline({
       character: saved.character ?? assets.characterName,
       fps: saved.fps ?? fps,
       timeline: saved.timeline,
       mode: 'edited',
-    };
+    }, animations);
     console.log('[choreograph] mode=edited 使用时间轴 ' + path.resolve(args.timeline));
   } else {
     plan = await choreograph({

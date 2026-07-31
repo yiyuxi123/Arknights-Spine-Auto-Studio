@@ -194,7 +194,12 @@
       var action = params.action;
       var loop = !!params.loop;
       var delta = typeof params.delta === 'number' ? params.delta : 1 / 30;
+      var requested = action;
       if (action !== currentAction) {
+        if (!skeletonData.findAnimation(action)) {
+          action = skeletonData.animations.length ? skeletonData.animations[0].name : null;
+          if (!action) throw new Error('skeleton has no animations');
+        }
         state.setAnimation(0, action, loop);
         currentAction = action;
       }
@@ -202,7 +207,7 @@
       state.apply(skeleton);
       skeleton.updateWorldTransform();
       draw();
-      return { ok: true, action: currentAction };
+      return { ok: true, action: currentAction, fallback: requested !== currentAction };
     },
     reset() {
       currentAction = null;

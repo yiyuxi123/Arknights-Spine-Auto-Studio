@@ -51,7 +51,15 @@ function createWindow() {
 
 ipcMain.handle('open-path', async (_e, p) => {
   if (!p) return { ok: false, error: 'no path' };
-  const err = await shell.openPath(String(p));
+  const target = String(p);
+  try {
+    const st = require('node:fs').statSync(target);
+    if (st.isFile()) {
+      shell.showItemInFolder(target); // 文件：在资源管理器中定位并选中
+      return { ok: true };
+    }
+  } catch { /* 路径不存在时退回 openPath */ }
+  const err = await shell.openPath(target);
   return { ok: !err, error: err || '' };
 });
 ipcMain.handle('get-port', () => PORT);

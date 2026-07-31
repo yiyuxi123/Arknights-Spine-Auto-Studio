@@ -69,8 +69,19 @@ function levenshtein(a, b) {
   return prev[n];
 }
 
-function pickAnimation(animations, text) {
+function pickAnimation(animations, text, actionDescriptions) {
   const lower = text.toLowerCase();
+  // 优先：动作字典（千问视觉/用户标注）中的语义标签命中
+  if (actionDescriptions) {
+    for (const animation of animations) {
+      const desc = String(actionDescriptions[animation.name] || '').toLowerCase();
+      if (!desc) continue;
+      const words = desc.split(/[，,、/\s（()）]+/).filter((w) => w.length >= 2);
+      if (words.some((w) => lower.includes(w))) {
+        return { animation, loop: /跑|走|移|待机|睡|坐|休息/.test(lower), speedHint: /跑|run/.test(lower) ? 1.2 : 1.0 };
+      }
+    }
+  }
   for (const motion of MOTION_KEYWORDS) {
     const matched = motion.keywords.some((keyword) => lower.includes(keyword));
     if (!matched) continue;
@@ -101,10 +112,10 @@ function pickAnimation(animations, text) {
 // ---------------------------------------------------------------------------
 // Mock choreographer: deterministic, offline.
 // ---------------------------------------------------------------------------
-export function mockChoreograph(prompt, animations, { fps = 30 } = {}) {
+export function mockChoreograph(prompt, animations, { fps = 30, actionDescriptions } = {}) {
   const parts = splitPrompt(prompt);
   const timeline = parts.map((part, index) => {
-    const picked = pickAnimation(animations, part);
+    const picked = pickAnimation(animations, part, actionDescriptions);
     const isLast = index === parts.length - 1;
     if (!picked) {
       const fallback = animations.find((a) => /idle/i.test(a.name)) ?? animations[0];
@@ -131,13 +142,18 @@ export function mockChoreograph(prompt, animations, { fps = 30 } = {}) {
 // ---------------------------------------------------------------------------
 // LLM choreographer (DeepSeek, OpenAI-compatible REST).
 // ---------------------------------------------------------------------------
-function buildSystemPrompt(character, animations) {
+function buildSystemPrompt(character, animations, actionDescriptions) {
   const table = animations
-    .map((animation) => `- ${animation.name}（duration ${animation.duration.toFixed(2)}s）`)
+    .map((animation) => {
+      const desc = actionDescriptions && actionDescriptions[animation.name]
+        ? ` —— 动作含义：${actionDescriptions[animation.name]}`
+        : '';
+      return `- ${animation.name}（duration ${animation.duration.toFixed(2)}s）${desc}`;
+    })
     .join('\n');
   return [
     `你是明日方舟角色动画的“动作编排导演”。角色：${character}。`,
-    `该角色可用的全部动画如下（只能从中选择，禁止编造动画名）：`,
+    `该角色可用的全部动画如下（只能从中选择，禁止编造动画名）；动画名后面的“动作含义”是视觉模型/用户标注的语义，请按语义而非名字选动作：`,
     table,
     ``,
     `把用户的自然语言指令切分为若干连续分镜，为每个分镜挑选最合适的动画。`,
@@ -155,7 +171,7 @@ function buildSystemPrompt(character, animations) {
   ].join('\n');
 }
 
-export async function llmChoreograph(prompt, animations, { character = 'unknown', fps = 30, model = DEFAULT_MODEL, baseURL = DEFAULT_BASE_URL, apiKey, timeoutMs = 60000 } = {}) {
+export async function llmChoreograph(prompt, animations, { character = 'unknown', fps = 30, model = DEFAULT_MODEL, baseURL = DEFAULT_BASE_URL, apiKey, timeoutMs = 60000, actionDescriptions } = {}) {
   if (!apiKey) {
     throw new Error('DEEPSEEK_API_KEY is not set; pass --mock to use the offline choreographer');
   }
@@ -175,7 +191,7 @@ export async function llmChoreograph(prompt, animations, { character = 'unknown'
         temperature: 0.6,
         response_format: { type: 'json_object' },
         messages: [
-          { role: 'system', content: buildSystemPrompt(character, animations) },
+          { role: 'system', content: buildSystemPrompt(character, animations, actionDescriptions) },
           { role: 'user', content: prompt },
         ],
       }),
@@ -246,13 +262,13 @@ export function timelineTotal(validated) {
   return validated.timeline.reduce((sum, segment) => sum + segment.duration, 0);
 }
 
-export async function choreograph({ prompt, animations, character = 'unknown', fps = 30, mock = false, apiKey, model, baseURL }) {
+export async function choreograph({ prompt, animations, character = 'unknown', fps = 30, mock = false, apiKey, model, baseURL, actionDescriptions }) {
   const useMock = mock || !apiKey;
   if (useMock) {
     if (!mock) console.warn('  [warn] DEEPSEEK_API_KEY 未设置，使用 mock 编导（--mock）');
-    const raw = mockChoreograph(prompt, animations, { fps });
+    const raw = mockChoreograph(prompt, animations, { fps, actionDescriptions });
     return { ...validateTimeline({ ...raw, character }, animations), mode: 'mock' };
   }
-  const raw = await llmChoreograph(prompt, animations, { character, fps, apiKey, model, baseURL });
+  const raw = await llmChoreograph(prompt, animations, { character, fps, apiKey, model, baseURL, actionDescriptions });
   return { ...validateTimeline(raw, animations), mode: 'llm' };
 }

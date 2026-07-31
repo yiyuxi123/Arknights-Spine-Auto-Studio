@@ -1,0 +1,66 @@
+{
+  "character": "amiya",
+  "animations": {
+    "Default": {
+      "raw_name": "Default",
+      "human_label": "待机站立",
+      "tags": [
+        "待机",
+        "站立",
+        "不动"
+      ],
+      "source": "rule"
+    },
+    "Interact": {
+      "raw_name": "Interact",
+      "human_label": "互动/打招呼",
+      "tags": [
+        "互动",
+        "打招呼",
+        "挥手"
+      ],
+      "source": "rule"
+    },
+    "Move": {
+      "raw_name": "Move",
+      "human_label": "移动/跑步",
+      "tags": [
+        "移动",
+        "跑步",
+        "前进"
+      ],
+      "source": "rule"
+    },
+    "Relax": {
+      "raw_name": "Relax",
+      "human_label": "休息放松",
+      "tags": [
+        "休息",
+        "放松",
+        "躺着"
+      ],
+      "source": "rule"
+    },
+    "Sit": {
+      "raw_name": "Sit",
+      "human_label": "坐下",
+      "tags": [
+        "坐下",
+        "坐着"
+      ],
+      "source": "rule"
+    },
+    "Sleep": {
+      "raw_name": "Sleep",
+      "human_label": "睡觉",
+      "tags": [
+        "睡觉",
+        "躺着",
+        "休息"
+      ],
+      "source": "rule"
+    }
+  },
+  "mode": "vision",
+  "updatedAt": "2026-07-31T14:04:58.976Z"
+}

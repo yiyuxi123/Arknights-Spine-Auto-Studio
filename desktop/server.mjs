@@ -35,6 +35,9 @@ function loadConfig() {
     apiKey: process.env.DEEPSEEK_API_KEY || file.deepseekApiKey || '',
     model: process.env.DEEPSEEK_MODEL || file.deepseekModel || 'deepseek-v4-flash',
     baseURL: process.env.DEEPSEEK_BASE_URL || file.deepseekBaseURL || 'https://api.deepseek.com',
+    visionKey: process.env.DASHSCOPE_API_KEY || file.visionApiKey || '',
+    visionModel: process.env.DASHSCOPE_VISION_MODEL || file.visionModel || 'qwen-vl-max',
+    visionBaseURL: process.env.DASHSCOPE_BASE_URL || file.visionBaseURL || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     file,
   };
 }
@@ -49,10 +52,13 @@ function applyConfig() {
   }
   if (cfg.model) process.env.DEEPSEEK_MODEL = cfg.model;
   if (cfg.baseURL) process.env.DEEPSEEK_BASE_URL = cfg.baseURL;
+  if (!process.env.DASHSCOPE_API_KEY && cfg.file.visionApiKey) process.env.DASHSCOPE_API_KEY = cfg.file.visionApiKey;
+  if (cfg.visionModel) process.env.DASHSCOPE_VISION_MODEL = cfg.visionModel;
+  if (cfg.visionBaseURL) process.env.DASHSCOPE_BASE_URL = cfg.visionBaseURL;
   return cfg;
 }
 
-function saveConfig({ apiKey, model, baseURL } = {}) {
+function saveConfig({ apiKey, model, baseURL, visionKey, visionModel, visionBaseURL } = {}) {
   const cfg = loadConfig();
   const next = { ...cfg.file };
   if (apiKey !== undefined) {
@@ -73,6 +79,23 @@ function saveConfig({ apiKey, model, baseURL } = {}) {
   if (baseURL !== undefined) {
     next.deepseekBaseURL = String(baseURL).trim() || 'https://api.deepseek.com';
     process.env.DEEPSEEK_BASE_URL = next.deepseekBaseURL;
+  }
+  if (visionKey !== undefined) {
+    if (String(visionKey).trim()) {
+      next.visionApiKey = String(visionKey).trim();
+      process.env.DASHSCOPE_API_KEY = String(visionKey).trim();
+    } else {
+      delete next.visionApiKey;
+      delete process.env.DASHSCOPE_API_KEY;
+    }
+  }
+  if (visionModel !== undefined) {
+    next.visionModel = String(visionModel).trim() || 'qwen-vl-max';
+    process.env.DASHSCOPE_VISION_MODEL = next.visionModel;
+  }
+  if (visionBaseURL !== undefined) {
+    next.visionBaseURL = String(visionBaseURL).trim() || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+    process.env.DASHSCOPE_BASE_URL = next.visionBaseURL;
   }
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2));
   return next;
@@ -214,13 +237,14 @@ function listFiles(dir, depth = 0) {
   if (!fs.existsSync(dir) || depth > 2) return [];
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
     if (d.name.startsWith('.')) return [];
+    if (depth === 0 && d.name === 'hi') return []; // 高清化资源独立目录，不进输出记录
     const p = path.join(dir, d.name);
     if (d.isDirectory()) return listFiles(p, depth + 1);
     if (!d.isFile()) return [];
     const st = fs.statSync(p);
     const rel = path.relative(outDir, p);
     const url = '/outputs/' + rel.split(/[\\/]/).map(encodeURIComponent).join('/');
-    return [{ name: rel, size: st.size, mtime: st.mtimeMs, url }];
+    return [{ name: rel, size: st.size, mtime: st.mtimeMs, url, dir: path.dirname(p) }];
   }).sort((a, b) => b.mtime - a.mtime);
 }
 
@@ -282,7 +306,11 @@ async function handleApi(req, res, url) {
       deepseekModel: loadConfig().model,
       deepseekBaseURL: loadConfig().baseURL,
       deepseekKeyMasked: maskKey(loadConfig().apiKey),
+      visionKey: !!loadConfig().visionKey,
+      visionModel: loadConfig().visionModel,
+      visionBaseURL: loadConfig().visionBaseURL,
       node: process.version,
+      outDir,
       models: cachedModels(),
       outputs: listFiles(outDir).slice(0, 40),
     });
@@ -290,13 +318,17 @@ async function handleApi(req, res, url) {
   }
   if (req.method === 'GET' && pathname === '/api/config') {
     const cfg = loadConfig();
-    sendJson(res, 200, { ok: true, hasKey: !!cfg.apiKey, apiKeyMasked: maskKey(cfg.apiKey), model: cfg.model, baseURL: cfg.baseURL, configFile: CONFIG_FILE });
+    sendJson(res, 200, {
+      ok: true, hasKey: !!cfg.apiKey, apiKeyMasked: maskKey(cfg.apiKey), model: cfg.model, baseURL: cfg.baseURL,
+      hasVisionKey: !!cfg.visionKey, visionKeyMasked: maskKey(cfg.visionKey), visionModel: cfg.visionModel, visionBaseURL: cfg.visionBaseURL,
+      configFile: CONFIG_FILE,
+    });
     return;
   }
   if (req.method === 'POST' && pathname === '/api/config') {
     const body = await readBody(req);
     try {
-      saveConfig({ apiKey: body.apiKey, model: body.model, baseURL: body.baseURL });
+      saveConfig({ apiKey: body.apiKey, model: body.model, baseURL: body.baseURL, visionKey: body.visionKey, visionModel: body.visionModel, visionBaseURL: body.visionBaseURL });
       sendJson(res, 200, { ok: true, message: '已保存' });
     } catch (err) { sendError(res, err); }
     return;
@@ -336,6 +368,21 @@ async function handleApi(req, res, url) {
       const animations = parseSkeleton(new Uint8Array(fs.readFileSync(skel))).animations.map((a) => ({ name: a.name, duration: a.duration }));
       const cfg = applyConfig();
       const { choreograph } = await import('../src/choreograph.mjs');
+      // 读取本地动作字典（千问视觉/用户标注的语义），让 LLM 能看懂特殊动作名
+      let actionDescriptions;
+      try {
+        const { loadDictionary } = await import('../src/label.mjs');
+        const dict = loadDictionary(String(body.key || body.character || ''), assetsDir);
+        if (dict && dict.animations) {
+          actionDescriptions = {};
+          for (const [name, info] of Object.entries(dict.animations)) {
+            if (!info || typeof info !== 'object') continue;
+            const parts = [String(info.human_label || '')];
+            if (Array.isArray(info.tags) && info.tags.length) parts.push('标签:' + info.tags.join('/'));
+            actionDescriptions[name] = parts.filter(Boolean).join('，');
+          }
+        }
+      } catch { /* 无字典时忽略 */ }
       const plan = await choreograph({
         prompt,
         animations,
@@ -345,6 +392,7 @@ async function handleApi(req, res, url) {
         apiKey: cfg.apiKey || undefined,
         model: cfg.model,
         baseURL: cfg.baseURL,
+        actionDescriptions,
       });
       return { character: plan.character, fps: plan.fps, timeline: plan.timeline, mode: plan.mode };
     });
@@ -506,15 +554,29 @@ async function handleApi(req, res, url) {
         rootDir: root,
         assets: { skel, atlas, png },
         outDir: pvDir,
+        mode: body.mode === 'frame' ? 'frame' : 'anim',
         chromePath: chromeCandidates(),
         onLog: (m) => console.log(m),
       });
+      // 读取本地动作字典（若有），供 UI 预填标注
+      let labels = {};
+      if (body.modelId) {
+        try {
+          const dictFile = path.join(assetsDir, String(body.modelId), 'actions.json');
+          if (fs.existsSync(dictFile)) {
+            const dict = JSON.parse(fs.readFileSync(dictFile, 'utf8'));
+            labels = (dict.animations && typeof dict.animations === 'object') ? dict.animations : {};
+          }
+        } catch { /* 字典损坏时忽略 */ }
+      }
       return {
         tag,
         outDir: pvDir,
+        labels,
         files: items.map((it) => ({
           name: it.name,
           duration: it.duration,
+          kind: it.kind,
           url: '/outputs/.previews/' + tag + '/' + encodeURIComponent(path.basename(it.file)),
         })),
       };
@@ -562,7 +624,7 @@ async function handleApi(req, res, url) {
     if (body.sr) argv.push('--sr');
     if (body.srEngine) argv.push('--sr-engine', String(body.srEngine));
     const outTag = `${safeName(body.outName || 'hi')}-${Date.now()}`;
-    const hiOut = path.join(outDir, outTag);
+    const hiOut = path.join(outDir, 'hi', outTag); // 高清化资源独立目录，assets/ 原图永不覆盖
     argv.push('--out', hiOut);
     const jobId = enqueue('upscale', async () => {
       await main(argv);
@@ -570,6 +632,69 @@ async function handleApi(req, res, url) {
       const png = path.join(hiOut, path.basename(String(body.png)));
       const files = [atlas, png].filter((p) => fs.existsSync(p)).map((p) => ({ path: p, url: `/outputs/${outTag}/${encodeURIComponent(path.basename(p))}`, kind: path.extname(p).slice(1) }));
       return { outDir: hiOut, files };
+    });
+    sendJson(res, 202, { ok: true, jobId });
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/api/vision/test') {
+    const body = await readBody(req);
+    const cfg = loadConfig();
+    const key = String(body.visionKey !== undefined ? body.visionKey : cfg.visionKey).trim();
+    if (!key) return sendJson(res, 200, { ok: false, error: '尚未配置千问视觉 Key（可在设置中填写，或使用离线规则标注）' });
+    const model = String(body.visionModel || cfg.visionModel || 'qwen-vl-max').trim();
+    const baseURL = String(body.visionBaseURL || cfg.visionBaseURL || 'https://dashscope.aliyuncs.com/compatible-mode/v1').trim();
+    try {
+      // 1x1 透明 PNG，验证 Key + 模型可用性（费用可忽略）
+      const tiny = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGUlEQVR4nGOQs6n4TwlmGDVg1IBRA4aLAQBT0dEQa3qWQAAAAABJRU5ErkJggg=='; // 16x16（Qwen-VL 要求宽高 > 10）
+      const resp = await fetch(baseURL.replace(/\/+$/, '') + '/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+        signal: AbortSignal.timeout(20000),
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: [{ type: 'text', text: '回复OK' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,' + tiny } }] }],
+        }),
+      });
+      if (!resp.ok) {
+        const detail = (await resp.text()).slice(0, 300);
+        return sendError(res, new Error(`千问视觉校验失败 HTTP ${resp.status}: ${detail}`));
+      }
+      sendJson(res, 200, { ok: true, message: '千问视觉连接成功（模型 ' + model + '）' });
+    } catch (err) {
+      sendError(res, new Error('千问视觉连接失败: ' + err.message));
+    }
+    return;
+  }
+  // ---- 视觉动作标注：离线规则 + 千问视觉 ----
+  if (req.method === 'POST' && pathname === '/api/label') {
+    const body = await readBody(req);
+    const skel = String(body.skel || '');
+    const atlas = String(body.atlas || '');
+    const png = String(body.png || '');
+    if (!skel || !atlas || !png || !fs.existsSync(skel) || !fs.existsSync(atlas) || !fs.existsSync(png)) {
+      return sendJson(res, 400, { ok: false, error: '模型三件套不完整，请先拉取模型' });
+    }
+    const modelId = String(body.modelId || '');
+    const jobId = enqueue('label', async () => {
+      const cfg = applyConfig();
+      const { labelActions, saveDictionary } = await import('../src/label.mjs');
+      const animations = parseSkeleton(new Uint8Array(fs.readFileSync(skel))).animations.map((a) => ({ name: a.name, duration: a.duration }));
+      const kfDir = path.join(outDir, '.previews', safeName(body.outName || modelId || 'model') + '-kf-' + Date.now());
+      const dict = await labelActions({
+        rootDir: root,
+        assets: { skel, atlas, png },
+        animations,
+        keyframesDir: kfDir,
+        visionKey: cfg.visionKey,
+        visionModel: cfg.visionModel,
+        visionBaseURL: cfg.visionBaseURL,
+        chromePath: chromeCandidates(),
+        onLog: (m) => console.log(m),
+      });
+      dict.character = String(body.characterName || body.outName || modelId || '角色');
+      let dictFile = null;
+      if (modelId) dictFile = saveDictionary(modelId, assetsDir, dict);
+      return { labels: dict.animations, dictFile, mode: dict.mode };
     });
     sendJson(res, 202, { ok: true, jobId });
     return;

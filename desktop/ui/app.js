@@ -18,6 +18,7 @@ const state = {
   lastModelParams: null,
   outputs: [],
   jobs: [],
+  outDir: '',
 };
 
 const TPL = [
@@ -126,6 +127,12 @@ function openSettings() {
     $('#cfg-current').textContent = cfg.hasKey ? `已配置（${cfg.apiKeyMasked}）` : '未配置（使用离线编排）';
     $('#cfg-file').textContent = cfg.configFile;
     $('#cfg-status').textContent = '';
+    $('#cfg-vkey').value = '';
+    $('#cfg-vkey').placeholder = cfg.hasVisionKey ? `已保存：${cfg.visionKeyMasked}（输入新 Key 可覆盖）` : 'sk-...（在 bailian.console.aliyun.com 创建）';
+    $('#cfg-vmodel').value = cfg.visionModel;
+    $('#cfg-vbaseurl').value = cfg.visionBaseURL;
+    $('#cfg-vcurrent').textContent = cfg.hasVisionKey ? `已配置（${cfg.visionKeyMasked}）` : '未配置（使用离线规则标注）';
+    $('#cfg-vstatus').textContent = '';
   }).catch((err) => { $('#cfg-status').textContent = '加载失败: ' + err.message; });
 }
 $('#btn-settings').addEventListener('click', openSettings);
@@ -171,6 +178,41 @@ $('#btn-cfg-clear').addEventListener('click', async () => {
   } catch (err) { st.textContent = '✗' + err.message; }
 });
 $('#chip-key').addEventListener('click', openSettings);
+$('#chip-vision').addEventListener('click', openSettings);
+$('#cfg-vkey-toggle').addEventListener('click', () => {
+  const el = $('#cfg-vkey');
+  el.type = el.type === 'password' ? 'text' : 'password';
+  el.nextElementSibling.textContent = el.type === 'password' ? '显示' : '隐藏';
+});
+$('#btn-cfg-vtest').addEventListener('click', async () => {
+  const st = $('#cfg-vstatus');
+  st.textContent = '测试中…';
+  try {
+    await api('/api/config', { visionKey: $('#cfg-vkey').value || undefined, visionModel: $('#cfg-vmodel').value, visionBaseURL: $('#cfg-vbaseurl').value });
+    const r = await api('/api/vision/test', {});
+    st.textContent = (r.ok ? '✅ ' : '✗ ') + (r.error || r.message || '未知结果');
+  } catch (err) { st.textContent = '✗' + err.message; }
+});
+$('#btn-cfg-vsave').addEventListener('click', async () => {
+  const st = $('#cfg-vstatus');
+  st.textContent = '保存中…';
+  try {
+    await api('/api/config', { visionKey: $('#cfg-vkey').value, visionModel: $('#cfg-vmodel').value, visionBaseURL: $('#cfg-vbaseurl').value });
+    st.textContent = '✅ 已保存（设置立即生效）';
+    refreshState();
+  } catch (err) { st.textContent = '✗' + err.message; }
+});
+$('#btn-cfg-vclear').addEventListener('click', async () => {
+  if (!confirm('确定清除已保存的千问视觉 Key 吗？')) return;
+  const st = $('#cfg-vstatus');
+  try {
+    await api('/api/config', { visionKey: '', visionModel: $('#cfg-vmodel').value, visionBaseURL: $('#cfg-vbaseurl').value });
+    st.textContent = '✅ 已清除';
+    $('#cfg-vkey').value = '';
+    $('#cfg-vkey').placeholder = 'sk-...';
+    refreshState();
+  } catch (err) { st.textContent = '✗' + err.message; }
+});
 
 // ---------------------------------------------------------------------------
 // 状态栏 / 通用刷新
@@ -180,6 +222,7 @@ async function refreshState() {
     const s = await api('/api/state');
     state.models = s.models || [];
     state.outputs = s.outputs || [];
+    state.outDir = s.outDir || '';
     renderModels();
     renderOutputs();
     const c = $('#chip-chrome');
@@ -191,6 +234,10 @@ async function refreshState() {
     const k = $('#chip-key');
     if (s.deepseekKey) { k.textContent = 'DeepSeek Key ✓'; k.className = 'chip ok'; }
     else { k.textContent = 'DeepSeek 离线模式'; k.className = 'chip'; }
+    state.vision = { key: !!s.visionKey, model: s.visionModel || 'qwen-vl-max', baseURL: s.visionBaseURL || '' };
+    const v = $('#chip-vision');
+    if (state.vision.key) { v.textContent = '千问视觉 ✓'; v.className = 'chip ok'; }
+    else { v.textContent = '千问视觉 未配置'; v.className = 'chip'; }
   } catch (err) {
     $('#chip-srv').textContent = '服务 异常';
     $('#chip-srv').className = 'chip bad';
@@ -431,20 +478,61 @@ $('#btn-refresh-out').addEventListener('click', refreshState);
 $('#btn-preview').addEventListener('click', async () => {
   const m = state.current;
   if (!m) { $('#pv-info').textContent = '❌ 请先选择模型'; showTab('models'); return; }
-  const assets = currentAssets();
+  // 预览固定使用原始三件套（assets/），速度快；高清化资源仅用于最终生成
+  const assets = { skel: m.files?.skel, atlas: m.files?.atlas, png: m.files?.png };
   if (!assets || !assets.skel || !assets.atlas || !assets.png) {
     $('#pv-info').textContent = '❌ 模型三件套不完整，请先拉取模型';
     return;
   }
   const btn = $('#btn-preview');
   btn.disabled = true;
-  $('#pv-info').textContent = '⏳ 正在渲染每个动作的预览帧（' + (m.animations || []).length + ' 个动作）…';
+  const mode = document.querySelector('input[name=pv-mode]:checked')?.value || 'anim';
+  $('#pv-info').textContent = '⏳ 正在' + (mode === 'anim' ? '渲染完整动画预览' : '截取单帧快照') + '（' + (m.animations || []).length + ' 个动作，使用原始资源）…';
   try {
-    const { jobId } = await api('/api/previews', { skel: assets.skel, atlas: assets.atlas, png: assets.png, outName: m.name });
+    const { jobId } = await api('/api/previews', { skel: assets.skel, atlas: assets.atlas, png: assets.png, outName: m.name, mode, modelId: m.id });
     state.activeJob = jobId;
     const result = await waitJob(jobId);
     state.previews = result.files;
-    $('#pv-info').textContent = '✅ 预览就绪：共 ' + result.files.length + ' 个动作 · 在卡片上可填「动作含义」并点「＋」加入时间轴';
+    // 本地动作字典（若有）预填标注
+    if (result.labels && typeof result.labels === 'object') {
+      for (const [name, info] of Object.entries(result.labels)) {
+        if (!info || typeof info !== 'object') continue;
+        if (!state.pvDesc[name] && info.human_label) {
+          state.pvDesc[name] = String(info.human_label) + (Array.isArray(info.tags) && info.tags.length ? '（' + info.tags.join('/') + '）' : '');
+        }
+      }
+    }
+    $('#pv-info').textContent = '✅ 预览就绪：共 ' + result.files.length + ' 个动作 · 卡片上可填「动作含义」并点「＋」加入时间轴';
+    renderPvGrid();
+  } catch (err) {
+    $('#pv-info').textContent = '❌ ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#btn-label').addEventListener('click', async () => {
+  const m = state.current;
+  if (!m) { $('#pv-info').textContent = '❌ 请先选择模型'; showTab('models'); return; }
+  const assets = { skel: m.files?.skel, atlas: m.files?.atlas, png: m.files?.png };
+  if (!assets || !assets.skel || !assets.atlas || !assets.png) {
+    $('#pv-info').textContent = '❌ 模型三件套不完整，请先拉取模型';
+    return;
+  }
+  const btn = $('#btn-label');
+  btn.disabled = true;
+  $('#pv-info').textContent = '⏳ 正在识别动作含义（渲染关键帧 + ' + (state.vision?.key ? '千问视觉看图打标' : '离线规则猜测') + '）…';
+  try {
+    const { jobId } = await api('/api/label', { skel: assets.skel, atlas: assets.atlas, png: assets.png, outName: m.name, modelId: m.id, characterName: m.name });
+    state.activeJob = jobId;
+    const result = await waitJob(jobId);
+    const labels = result.labels || {};
+    for (const [name, info] of Object.entries(labels)) {
+      if (!info || typeof info !== 'object') continue;
+      const tagText = Array.isArray(info.tags) && info.tags.length ? '（' + info.tags.join('/') + '）' : '';
+      state.pvDesc[name] = String(info.human_label || '') + tagText;
+    }
+    $('#pv-info').textContent = '✅ 标注完成（' + (result.mode === 'vision' ? '千问视觉 + 离线规则' : '离线规则') + '），可继续在卡片上微调；已保存到本地动作字典' + (result.dictFile ? '：' + result.dictFile : '') + '。以后 DeepSeek 编排就能看懂这些动作了';
     renderPvGrid();
   } catch (err) {
     $('#pv-info').textContent = '❌ ' + err.message;
@@ -456,18 +544,23 @@ $('#btn-preview').addEventListener('click', async () => {
 function renderPvGrid() {
   const box = $('#pv-grid');
   const files = state.previews || [];
-  if (!files.length) { box.innerHTML = '<div class="muted">还没有预览，点上方「生成动作预览图」。</div>'; return; }
+  if (!files.length) { box.innerHTML = '<div class="muted">还没有预览，点上方「生成动作预览」。</div>'; return; }
   box.innerHTML = '';
   const inQueue = new Set(state.queue.map((s) => s.action));
   for (const p of files) {
     const card = document.createElement('div');
     card.className = 'pv-card' + (inQueue.has(p.name) ? ' used' : '');
     const desc = state.pvDesc[p.name] || '';
-    card.innerHTML = `
-      <div class="pv-img"><img src="${p.url}" loading="lazy" alt="${escapeHtml(p.name)}"></div>
-      <div class="pv-name"><b>${escapeHtml(p.name)}</b><span class="muted">${p.duration > 0 ? p.duration.toFixed(2) + 's' : '瞬发'}</span></div>
-      <input class="pv-desc" type="text" placeholder="这个动作代表什么？（可选）" value="${escapeHtml(desc)}">
-      <button class="primary pv-add" type="button">＋ 加入时间轴</button>`;
+    const isGif = p.kind === 'gif';
+    card.innerHTML =
+      '<div class="pv-img">' + (isGif
+        ? '<img src="' + p.url + '" alt="' + escapeHtml(p.name) + '" title="完整动画预览（循环播放）">'
+        : '<img src="' + p.url + '" loading="lazy" alt="' + escapeHtml(p.name) + '" title="单帧快照">') +
+      '</div>' +
+      '<div class="pv-name"><b>' + escapeHtml(p.name) + '</b><span class="muted">' + (p.duration > 0 ? p.duration.toFixed(2) + 's' : '瞬发') + (isGif ? ' · GIF' : '') + '</span></div>' +
+      (desc ? '<div class="pv-tags">' + escapeHtml(desc) + '</div>' : '') +
+      '<input class="pv-desc" type="text" placeholder="这个动作代表什么？（可选，可点 🤖 AI 自动标注）" value="' + escapeHtml(desc) + '">' +
+      '<button class="primary pv-add" type="button">＋ 加入时间轴</button>';
     const descInput = card.querySelector('.pv-desc');
     descInput.addEventListener('input', () => {
       state.pvDesc[p.name] = descInput.value;
@@ -924,7 +1017,7 @@ function renderOutputs() {
         ev.stopPropagation();
         const act = btn.dataset.act;
         if (act === 'view') openLightbox(o.name, media);
-        else if (act === 'folder') openFolder(o.url.replace(/^\/outputs\//, ''));
+        else if (act === 'folder') openFolder(o.dir || o.url);
         else if (act === 'json') {
           fetch(o.url).then((r) => r.text()).then((txt) => openLightbox(o.name, '<pre class="lb-json">' + escapeHtml(txt) + '</pre>')).catch(() => alert('读取失败'));
         }
@@ -953,16 +1046,22 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !$('#lightbox').hidden) $('#lightbox').hidden = true;
 });
 
-function openFolder(filePath) {
-  const dir = String(filePath || '').replace(/[\\/][^\\/]*$/, '');
+function openFolder(target) {
+  let abs = String(target || '');
+  if (!abs) { alert('没有可打开的路径'); return; }
+  const isAbs = /^[a-zA-Z]:[\\/]/.test(abs) || abs.startsWith('\\\\');
+  if (!isAbs) {
+    const rel = abs.startsWith('/outputs/') ? decodeURIComponent(abs.slice(9)).replace(/\//g, '\\') : abs.replace(/\//g, '\\');
+    abs = (state.outDir || '') + '\\' + rel;
+  }
   if (window.desktopAPI?.openPath) {
-    window.desktopAPI.openPath(dir).then((r) => { if (!r.ok) alert('打开失败: ' + r.error); });
+    window.desktopAPI.openPath(abs).then((r) => { if (!r.ok) alert('打开失败: ' + r.error + '\n路径: ' + abs); });
   } else if (navigator.clipboard) {
-    navigator.clipboard.writeText(dir)
-      .then(() => alert('已复制输出目录路径（安装 Electron 后可一键打开）：\n' + dir))
-      .catch(() => alert(dir));
+    navigator.clipboard.writeText(abs)
+      .then(() => alert('已复制路径（安装 Electron 后可一键打开）：\n' + abs))
+      .catch(() => alert(abs));
   } else {
-    alert(dir);
+    alert(abs);
   }
 }
 

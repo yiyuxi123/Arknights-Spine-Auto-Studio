@@ -65,10 +65,13 @@ export async function renderTimelineToGif({
       }
       const seg = segments[segIndex];
       const delta = (1 / fps) * (seg.timeScale || 1);
-      await evalJs(
+      const stepResult = await evalJs(
         send,
         `studio.step(${JSON.stringify({ action: seg.action, loop: seg.loop, delta })})`,
       );
+      if (stepResult && stepResult.fallback) {
+        console.warn(`  [warn] 动作 "${seg.action}" 不存在，已替换为 "${stepResult.action}"`);
+      }
       const dataUrl = await evalJs(send, 'studio.snapshot()');
       const png = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
       const decoded = decodePng(png);

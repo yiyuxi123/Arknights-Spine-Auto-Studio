@@ -424,6 +424,11 @@ footer {
 .pv-card .pv-img img { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; display: block; }
 .pv-card .pv-name { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 10px 2px; font-size: 12.5px; }
 .pv-card .pv-desc { margin: 6px 10px 8px; font-size: 12px; padding: 6px 9px; }
+.pv-card .pv-tags {
+  margin: 6px 10px 0; font-size: 11px; color: var(--violet); line-height: 1.5;
+  background: rgba(167, 139, 250, 0.08); border: 1px solid rgba(167, 139, 250, 0.25);
+  border-radius: 8px; padding: 4px 8px; word-break: break-all;
+}
 .pv-card .pv-add { margin: 0 10px 10px; }
 .pv-card.used { border-color: rgba(74, 222, 154, 0.55); box-shadow: 0 0 0 1px rgba(74, 222, 154, 0.3); }
 .pv-card.used .pv-img img { opacity: 0.72; }

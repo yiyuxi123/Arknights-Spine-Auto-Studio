@@ -18,10 +18,10 @@ const configFile = path.join(root, 'config.json');
 if (fs.existsSync(configFile)) {
   try {
     const cfg = JSON.parse(fs.readFileSync(configFile, 'utf8'));
-    if (cfg.deepseekApiKey || process.env.DEEPSEEK_API_KEY) {
-      console.error('[安全] 检测到本机已配置 DeepSeek API Key（config.json 或环境变量）。');
+    if (cfg.deepseekApiKey || process.env.DEEPSEEK_API_KEY || cfg.visionApiKey || process.env.DASHSCOPE_API_KEY) {
+      console.error('[安全] 检测到本机已配置 DeepSeek / 千问视觉 API Key（config.json 或环境变量）。');
       console.error('[安全] 为防止 Key 随发布包泄露，构建已中止。请先运行桌面版「设置 → 清除 Key」');
-      console.error('[安全] 或删除 config.json 中的 deepseekApiKey 字段后再打包。');
+      console.error('[安全] 或删除 config.json 中的 deepseekApiKey / visionApiKey 字段后再打包。');
       process.exit(1);
     }
   } catch { /* config.json 损坏时忽略 */ }
@@ -90,12 +90,13 @@ const readme = `明日方舟 Spine 自动动画工作室 v${pkg.version} 使用�
   - 未安装时：自动使用 Chrome 应用窗口（零安装，推荐）。
   - 可选：双击 install-desktop.cmd 安装 Electron 桌面版（约 100MB，国内自动走镜像）。
 
-二、DeepSeek API Key（可选，不填也能用）
-  1. 点击窗口右上角「⚙ 设置」按钮；
-  2. 填入 API Key（在 platform.deepseek.com 创建，格式 sk-...）；
-  3. 点「保存」（可先点「测试连接」验证）。
-  说明：Key 仅保存在本机 config.json，不会上传；不填则自动使用离线关键词编排。
-  模型默认为 deepseek-v4-flash，地址默认为 https://api.deepseek.com，均可修改。
+二、API Key（可选，不填也能用）
+  DeepSeek 智能编排：设置 → DeepSeek 卡片填 Key（platform.deepseek.com 创建）→ 测试 → 保存；
+    模型默认 deepseek-v4-flash，地址默认 https://api.deepseek.com。
+  千问视觉标注：设置 → 千问视觉卡片填 DashScope Key（bailian.console.aliyun.com 创建）→ 测试 → 保存；
+    模型默认 qwen-vl-max。不填则用离线规则猜测 + 手动标注。
+  三档模式：不配 Key = 纯离线；只配 DeepSeek = 半自动；双 Key = 全自动（千问看图打标 + DeepSeek 编排）。
+  说明：Key 仅保存在本机 config.json，不会上传、不会打进发布包（打包有安全闸）。
 
 三、基本流程（四步：拉取 → 高清化(可选) → 编排时间轴 → 生成动画）
   1. 拉取模型：输入干员/异格/敌人名称 →「解析」→ 选皮肤/视图 →「拉取三件套」；
@@ -104,7 +105,8 @@ const readme = `明日方舟 Spine 自动动画工作室 v${pkg.version} 使用�
      （灰=原图 蓝=Lanczos 绿=Real-ESRGAN 紫=Waifu2x）→ 点选满意方案 →「开始高清化」；
      完成后点「采用这套高清化资源」，后续预览与生成都会用高清资源（不会重复放大）；
      也可以直接「跳过高清化」用原图；
-  3. 编排时间轴：先「生成动作预览图」看每个动作长什么样（可填动作含义），
+  3. 编排时间轴：先「生成动作预览」看每个动作长什么样（⚡单帧 或 🎬完整动画 GIF，默认 GIF），
+     动作名看不懂可点「🤖 AI 自动标注」（千问视觉 + 离线规则，结果存本地动作字典）；
      然后两种排法任选：① 写自然语言（如「先睡觉，然后起来跑步」）让 DeepSeek 编排；
      ② 在预览卡上点「＋ 加入时间轴」手动排布；下方 PR 式色块条可改时长/循环/倍速/顺序；
   4. 生成动画：确认资源与时间轴 →「开始生成」；任意输出卡片可点击放大预览。
