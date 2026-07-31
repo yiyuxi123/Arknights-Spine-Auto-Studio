@@ -64,10 +64,10 @@ export async function renderTimelineToGif({
         segIndex++;
       }
       const seg = segments[segIndex];
-      const delta = (1 / fps) * (seg.timeScale || 1);
+      const delta = 1 / fps; // 实时间，速率由 trackEntry.timeScale 应用
       const stepResult = await evalJs(
         send,
-        `studio.step(${JSON.stringify({ action: seg.action, loop: seg.loop, delta })})`,
+        `studio.step(${JSON.stringify({ action: seg.action, loop: seg.loop, delta, timeScale: seg.timeScale || 1 })})`,
       );
       if (stepResult && stepResult.fallback) {
         console.warn(`  [warn] 动作 "${seg.action}" 不存在，已替换为 "${stepResult.action}"`);

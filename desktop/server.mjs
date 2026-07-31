@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { main } from '../src/pipeline.mjs';
 import { parseSkeleton } from '../src/skel.mjs';
-import { resolveModelRef, fetchCharacterFromPrts } from '../src/prts.mjs';
+import { resolveModelRef, fetchCharacterFromPrts, enemyIndex } from '../src/prts.mjs';
 import { alignAssetsInPlace } from '../src/align.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -24,6 +24,11 @@ const PORT = parseInt(process.env.ZDXR_PORT || '4879', 10);
 const HOST = '127.0.0.1';
 
 fs.mkdirSync(outDir, { recursive: true });
+
+// 敌人名缓存：启动时异步预热翻转索引，本地缓存文件加速
+const ENEMY_INDEX_FILE = path.join(assetsDir, 'enemy-index.json');
+let enemyNameCache = {};
+enemyIndex({ cacheFile: ENEMY_INDEX_FILE }).then((m) => { enemyNameCache = m; }).catch(() => {});
 
 // ---------- 配置（config.json：DeepSeek API Key / 模型 / 地址） ----------
 const CONFIG_FILE = path.join(root, 'config.json');
@@ -259,36 +264,141 @@ function chromeCandidates() {
   return list.find((p) => fs.existsSync(p)) || null;
 }
 
+// 常见皮肤后缀 → 中文标签（无 meta.json 时的兜底显示）
+const SKIN_HINTS = {
+  kfc_1: 'KFC 联动', kfc_2: 'KFC 联动', kfc_3: 'KFC 联动',
+  witch_2: '万圣节', witch_3: '万圣节',
+  boc_1: '泳装', boc_2: '泳装', boc_3: '泳装', boc_4: '夏日泳装',
+  chr_1: '新春', chr_2: '新春',
+  doll_1: '手办', iteration_1: '基建一期', iteration_2: '基建二期', iteration_3: '基建三期', mini: '迷你', ico: '图标', evg: '庆典',
+};
+
 function cachedModels() {
   if (!fs.existsSync(assetsDir)) return [];
-  return fs.readdirSync(assetsDir, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => {
-      const dir = path.join(assetsDir, d.name);
-      const skel = path.join(dir, `${d.name}.skel`);
-      if (!fs.existsSync(skel)) return null;
+  const groups = [];
+  for (const d of fs.readdirSync(assetsDir, { withFileTypes: true })) {
+    if (!d.isDirectory() || d.name.startsWith('.')) continue;
+    const dir = path.join(assetsDir, d.name);
+    // 读 PRTS 元数据（角色名 + 皮肤/视图清单）
+    let meta = null;
+    try {
+      const mf = path.join(dir, 'meta.json');
+      if (fs.existsSync(mf)) meta = JSON.parse(fs.readFileSync(mf, 'utf8'));
+    } catch { meta = null; }
+    // 扫描目录内全部 .skel 三件套（同一角色可有多个皮肤/视图）
+    let skelFiles = [];
+    try { skelFiles = fs.readdirSync(dir).filter((f) => f.endsWith('.skel')); } catch { continue; }
+    const entries = [];
+    for (const sf of skelFiles.sort()) {
+      const base = sf.slice(0, -'.skel'.length);
+      const skelPath = path.join(dir, sf);
+      const atlas = path.join(dir, base + '.atlas');
+      if (!fs.existsSync(atlas)) continue;
+      // PNG：同名文件，否则取 atlas 声明的第一页
+      let png = path.join(dir, base + '.png');
+      if (!fs.existsSync(png)) {
+        try {
+          const first = fs.readFileSync(atlas, 'utf8').toString().split(/\r?\n/).map((l) => l.trim()).find((l) => /\.png$/i.test(l));
+          if (first) png = path.join(dir, first);
+        } catch { /* ignore */ }
+      }
+      if (!fs.existsSync(png)) continue;
       let animations = [];
-      try { animations = parseSkeleton(new Uint8Array(fs.readFileSync(skel))).animations.map((a) => ({ name: a.name, duration: a.duration })); } catch { animations = []; }
-      let source = 'local';
-      if (/^enemy_\d+_/i.test(d.name)) source = 'prts-enemy';
-      else if (/^(char_|build_)/i.test(d.name)) source = 'prts';
-      const label = d.name.replace(/^(char_|enemy_|build_)/, '');
-      return {
-        id: d.name,
-        name: label,
-        dir,
-        source,
-        animations,
-        files: {
-          skel: path.join(dir, `${d.name}.skel`),
-          atlas: fs.existsSync(path.join(dir, `${d.name}.atlas`)) ? path.join(dir, `${d.name}.atlas`) : null,
-          png: fs.existsSync(path.join(dir, `${d.name}.png`)) ? path.join(dir, `${d.name}.png`) : null,
-        },
-      };
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+      try { animations = parseSkeleton(new Uint8Array(fs.readFileSync(skelPath))).animations.map((a) => ({ name: a.name, duration: a.duration })); } catch { animations = []; }
+      // 皮肤/视图标签：meta.json 反查 → 后缀映射兜底
+      let skinLabel = base === d.name ? '默认' : base;
+      let viewLabel = '';
+      if (meta && meta.skin && typeof meta.skin === 'object') {
+        for (const [sname, views] of Object.entries(meta.skin)) {
+          for (const [vname, f] of Object.entries(views || {})) {
+            if (String(f?.file || '') === base) { skinLabel = sname; viewLabel = vname; }
+          }
+        }
+      }
+      if (skinLabel === base) {
+        const prefix = 'build_' + d.name;
+        let suffix = '';
+        if (base === d.name) suffix = '';
+        else if (base.startsWith(prefix)) suffix = base.slice(prefix.length).replace(/^_/, '');
+        else if (base.startsWith(d.name + '_')) suffix = base.slice(d.name.length + 1);
+        else suffix = base.replace(/^build_/, '').replace(/^char_[^_]+_/, '');
+        skinLabel = SKIN_HINTS[suffix] || (suffix ? '皮肤 ' + suffix : '默认');
+      }
+      entries.push({ base, skinLabel, viewLabel, files: { skel: skelPath, atlas, png }, animations });
+    }
+    if (!entries.length) continue;
+    // 组信息：类型优先看三件套前缀（兼容 103_angel 这类旧目录）
+    const firstBase = entries[0].base;
+    let kind = 'local';
+    if (/^enemy_\d+_/i.test(d.name) || /^enemy_/i.test(firstBase)) kind = 'enemy';
+    else if (/^char_/i.test(d.name) || /^char_/i.test(firstBase)) kind = 'char';
+    else if (/^build_/i.test(firstBase) || /^build_/i.test(d.name)) kind = 'build';
+    const name = meta?.name || (kind === 'enemy' ? (enemyNameCache[d.name]?.name || d.name.replace(/^enemy_/, '')) : d.name.replace(/^(char_|enemy_|build_)/, '')) || d.name;
+    const info = meta && meta.info && typeof meta.info === 'object' ? meta.info : {};
+    const gmeta = {
+      class: meta?.class || info['\u804c\u4e1a'] || '',
+      rarity: parseInt(meta?.rarity ?? info['\u7a00\u6709\u5ea6'], 10) || 0,
+      branch: meta?.branch || info['\u5206\u652f'] || info['\u5b50\u804c\u4e1a'] || '',
+      faction: meta?.faction || info['\u6240\u5c5e\u56fd\u5bb6'] || info['\u6240\u5c5e\u7ec4\u7ec7'] || '',
+      position: meta?.position || info['\u4f4d\u7f6e'] || '',
+      tags: meta?.tags || info['\u6807\u7b7e'] || '',
+      trait: meta?.trait || info['\u7279\u6027'] || '',
+      enemyLevel: meta?.enemyLevel || info['\u5730\u4f4d\u7ea7\u522b'] || '',
+      enemyType: meta?.enemyType || info['\u4f24\u5bb3\u7c7b\u578b'] || '',
+      enemyAttack: meta?.enemyAttack || info['\u653b\u51fb\u65b9\u5f0f'] || '',
+      enemyMove: meta?.enemyMove || info['\u884c\u52a8\u65b9\u5f0f'] || '',
+      description: meta?.description || info['\u63cf\u8ff0'] || '',
+      stats: meta?.stats || null,
+      art: meta?.art || null,
+      info,
+    };
+    groups.push({ id: d.name, name, kind, dir, meta, ...gmeta, entries });
+  }
+  const order = { char: 0, enemy: 1, build: 2, local: 3 };
+  groups.sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9) || String(a.name).localeCompare(String(b.name), 'zh-Hans-CN'));
+  // 摊平为「模型条目」列表：每个皮肤/视图一个可选条目
+  const flat = [];
+  for (const g of groups) {
+    for (const e of g.entries) {
+      flat.push({
+        id: g.id + '|' + e.base,
+        groupId: g.id,
+        name: e.skinLabel !== '默认' && g.entries.length > 1 ? g.name + ' · ' + e.skinLabel : g.name,
+        displayName: g.name,
+        skinLabel: e.skinLabel,
+        viewLabel: e.viewLabel,
+        base: e.base,
+        kind: g.kind,
+        source: g.kind === 'local' ? 'local' : g.kind === 'enemy' ? 'prts-enemy' : 'prts',
+        dir: g.dir,
+        animations: e.animations,
+        files: e.files,
+        class: g.class, rarity: g.rarity, branch: g.branch, faction: g.faction,
+        position: g.position, tags: g.tags, trait: g.trait, enemyLevel: g.enemyLevel,
+        enemyType: g.enemyType, enemyAttack: g.enemyAttack, enemyMove: g.enemyMove,
+        description: g.description, stats: g.stats, art: g.art, info: g.info,
+        groupCount: g.entries.length,
+      });
+    }
+  }
+  return flat;
 }
+
+// 兼容新旧模型 id：新格式「组ID|文件名」（组=角色目录，文件=具体皮肤/视图三件套），
+// 旧格式为角色目录名（charId）。找不到时返回 null。
+function modelFromKey(key) {
+  if (!key) return null;
+  const k = String(key);
+  const models = cachedModels();
+  let m = models.find((x) => x.id === k);
+  if (!m && k.includes('|')) {
+    const [gid, base] = k.split('|');
+    m = models.find((x) => x.groupId === gid && x.base === base) || models.find((x) => x.groupId === gid);
+  }
+  if (!m) m = models.find((x) => x.groupId === k);
+  return m || null;
+}
+
 
 // ---------------------------------------------------------------------------
 // API
@@ -311,6 +421,7 @@ async function handleApi(req, res, url) {
       visionBaseURL: loadConfig().visionBaseURL,
       node: process.version,
       outDir,
+      assetsDir,
       models: cachedModels(),
       outputs: listFiles(outDir).slice(0, 40),
     });
@@ -361,10 +472,12 @@ async function handleApi(req, res, url) {
       let png = String(body.png || '');
       if (!skel || !atlas || !png) {
         const key = String(body.key || '');
-        const model = cachedModels().find((m) => m.id === key);
+        const model = modelFromKey(key);
         if (!model || !model.files || !model.files.skel) throw new Error('未找到模型 ' + key + '，请先拉取三件套');
         skel = model.files.skel; atlas = model.files.atlas; png = model.files.png;
       }
+      const planModel = modelFromKey(String(body.key || ''));
+      const planModelId = (planModel && planModel.groupId) || String(body.character || body.key || '');
       const animations = parseSkeleton(new Uint8Array(fs.readFileSync(skel))).animations.map((a) => ({ name: a.name, duration: a.duration }));
       const cfg = applyConfig();
       const { choreograph } = await import('../src/choreograph.mjs');
@@ -372,7 +485,7 @@ async function handleApi(req, res, url) {
       let actionDescriptions;
       try {
         const { loadDictionary } = await import('../src/label.mjs');
-        const dict = loadDictionary(String(body.key || body.character || ''), assetsDir);
+        const dict = loadDictionary(planModelId, assetsDir);
         if (dict && dict.animations) {
           actionDescriptions = {};
           for (const [name, info] of Object.entries(dict.animations)) {
@@ -494,17 +607,34 @@ async function handleApi(req, res, url) {
     if (!/^[0-9a-fA-F]{6,8}$/.test(bgText)) return sendError(res, new Error('背景色格式应为 RRGGBB 或 RRGGBBAA（如 00000000）'));
     const upNum = parseInt(body.upscale || '1', 10);
     if (!(upNum >= 1 && upNum <= 8)) return sendError(res, new Error('放大倍数应在 1~8 之间'));
+    // 若未显式传三件套，尝试按 key 从本地模型库补齐（避免把新 id 直接传给 CLI 重新下载）
+    let rskel = String(body.skel || '');
+    let ratlas = String(body.atlas || '');
+    let rpng = String(body.png || '');
+    if (!rskel || !ratlas || !rpng) {
+      const m = modelFromKey(String(body.key || ''));
+      if (m && m.files) { rskel = m.files.skel || rskel; ratlas = m.files.atlas || ratlas; rpng = m.files.png || rpng; }
+    }
+    if (rskel && ratlas && rpng) {
+      // 本地三件套就绪：直接使用，不再触发 PRTS 重新下载
+      body.skel = rskel; body.atlas = ratlas; body.png = rpng;
+      body.source = 'local';
+    }
+
     const stem = safeName(body.outName || (body.enemy || body.character || body.key || 'result'));
     const outFile = `${stem}-${Date.now()}`;
     const outBase = path.join(outDir, outFile);
     const argv = ['run'];
     if (body.prompt) argv.push('--prompt', String(body.prompt));
-    argv.push('--source', String(body.source || 'prts'));
-    if (body.character) argv.push('--character', String(body.character));
-    if (body.enemy) argv.push('--enemy', String(body.enemy));
-    if (body.key) argv.push('--key', String(body.key));
-    if (body.skin) argv.push('--skin', String(body.skin));
-    if (body.view) argv.push('--view', String(body.view));
+    if (String(body.source || 'prts') === 'prts' && !body.skel && !body.atlas && !body.png) {
+      // 无本地三件套时才走 PRTS 重新拉取（key 必须是角色目录名）
+      argv.push('--source', 'prts');
+      if (body.character) argv.push('--character', String(body.character));
+      if (body.enemy) argv.push('--enemy', String(body.enemy));
+      if (body.key) argv.push('--key', String(body.key).split('|')[0]);
+      if (body.skin) argv.push('--skin', String(body.skin));
+      if (body.view) argv.push('--view', String(body.view));
+    }
     if (body.skel) argv.push('--skel', String(body.skel));
     if (body.atlas) argv.push('--atlas', String(body.atlas));
     if (body.png) argv.push('--png', String(body.png));
@@ -562,7 +692,7 @@ async function handleApi(req, res, url) {
       let labels = {};
       if (body.modelId) {
         try {
-          const dictFile = path.join(assetsDir, String(body.modelId), 'actions.json');
+        const dictFile = path.join(assetsDir, (modelFromKey(String(body.modelId || '') ) || {}).groupId || String(body.modelId || ''), 'actions.json');
           if (fs.existsSync(dictFile)) {
             const dict = JSON.parse(fs.readFileSync(dictFile, 'utf8'));
             labels = (dict.animations && typeof dict.animations === 'object') ? dict.animations : {};
@@ -630,12 +760,28 @@ async function handleApi(req, res, url) {
       await main(argv);
       const atlas = path.join(hiOut, path.basename(String(body.atlas)));
       const png = path.join(hiOut, path.basename(String(body.png)));
-      const files = [atlas, png].filter((p) => fs.existsSync(p)).map((p) => ({ path: p, url: `/outputs/${outTag}/${encodeURIComponent(path.basename(p))}`, kind: path.extname(p).slice(1) }));
+      const files = [atlas, png].filter((p) => fs.existsSync(p)).map((p) => ({ path: p, url: `/outputs/hi/${outTag}/${encodeURIComponent(path.basename(p))}`, kind: path.extname(p).slice(1) }));
       return { outDir: hiOut, files };
     });
     sendJson(res, 202, { ok: true, jobId });
     return;
   }
+  // ---- 补全本地模型资料 + 美术（PRTS） ----
+  if (req.method === 'POST' && pathname === '/api/enrich') {
+    const jobId = enqueue('enrich', async () => {
+      const { enrichAllLocal } = await import('../src/info.mjs');
+      const results = await enrichAllLocal(assetsDir, { onLog: (m) => console.log(m) });
+      // 刷新敌人翻转索引缓存，使新 meta 名称立即生效
+      try {
+        const idx = await enemyIndex({ force: true, cacheFile: ENEMY_INDEX_FILE });
+        enemyNameCache = idx;
+      } catch { /* 网络异常不影响主流程 */ }
+      return { results, done: results.filter((r) => r.ok).length, total: results.length };
+    });
+    sendJson(res, 202, { ok: true, jobId });
+    return;
+  }
+
   if (req.method === 'POST' && pathname === '/api/vision/test') {
     const body = await readBody(req);
     const cfg = loadConfig();
@@ -674,7 +820,7 @@ async function handleApi(req, res, url) {
     if (!skel || !atlas || !png || !fs.existsSync(skel) || !fs.existsSync(atlas) || !fs.existsSync(png)) {
       return sendJson(res, 400, { ok: false, error: '模型三件套不完整，请先拉取模型' });
     }
-    const modelId = String(body.modelId || '');
+    const modelId = (modelFromKey(String(body.modelId || '')) || {}).groupId || String(body.modelId || '');
     const jobId = enqueue('label', async () => {
       const cfg = applyConfig();
       const { labelActions, saveDictionary } = await import('../src/label.mjs');
@@ -712,6 +858,7 @@ function serveStatic(res, url, baseDir, label) {
     else if (rel.startsWith('ui/')) rel = rel.slice(3) || 'index.html';
   }
   if (label === 'outputs' && rel.startsWith('outputs/')) rel = rel.slice(8);
+  if (label === 'assets' && rel.startsWith('assets/')) rel = rel.slice(7);
   const file = path.resolve(baseDir, rel);
   if (!file.startsWith(path.resolve(baseDir) + path.sep) && file !== path.resolve(baseDir)) {
     res.writeHead(403); res.end('forbidden'); return;
@@ -738,6 +885,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/' || url.pathname === '/ui' || url.pathname.startsWith('/ui/')) {
       serveStatic(res, url, uiDir, 'ui');
+      return;
+    }
+    if (url.pathname.startsWith('/assets/')) {
+      serveStatic(res, url, assetsDir, 'assets');
       return;
     }
     if (url.pathname.startsWith('/outputs/')) {

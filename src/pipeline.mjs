@@ -436,7 +436,7 @@ async function renderFramesToPng({ rootDir, assets, timeline, width, height, fps
         segIndex++;
       }
       const seg = segments[segIndex];
-      await evalJs(send, `studio.step(${JSON.stringify({ action: seg.action, loop: seg.loop, delta: (1 / fps) * (seg.timeScale || 1) })})`);
+      await evalJs(send, `studio.step(${JSON.stringify({ action: seg.action, loop: seg.loop, delta: 1 / fps, timeScale: seg.timeScale || 1 })})`);
       const dataUrl = await evalJs(send, 'studio.snapshot()');
       const dec = decodePng(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'));
       out.push(dec.rgba);

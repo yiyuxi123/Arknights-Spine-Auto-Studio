@@ -38,7 +38,7 @@
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
 
   var scene = null, skeleton = null, state = null, skeletonData = null;
-  var currentAction = null, ready = false, loadError = null, boundsInfo = null;
+  var currentAction = null, currentTimeScale = 1, ready = false, loadError = null, boundsInfo = null;
 
   function hexBg(hex) {
     hex = String(hex).replace('#', '');
@@ -194,14 +194,17 @@
       var action = params.action;
       var loop = !!params.loop;
       var delta = typeof params.delta === 'number' ? params.delta : 1 / 30;
+      var ts = typeof params.timeScale === 'number' && params.timeScale > 0 && isFinite(params.timeScale) ? params.timeScale : 1;
       var requested = action;
-      if (action !== currentAction) {
+      if (action !== currentAction || ts !== currentTimeScale) {
         if (!skeletonData.findAnimation(action)) {
           action = skeletonData.animations.length ? skeletonData.animations[0].name : null;
           if (!action) throw new Error('skeleton has no animations');
         }
-        state.setAnimation(0, action, loop);
+        var entry = state.setAnimation(0, action, loop);
+        entry.timeScale = ts;
         currentAction = action;
+        currentTimeScale = ts;
       }
       state.update(delta);
       state.apply(skeleton);
@@ -211,6 +214,7 @@
     },
     reset() {
       currentAction = null;
+      currentTimeScale = 1;
       if (state) state.clearTracks();
       return { ok: true };
     },

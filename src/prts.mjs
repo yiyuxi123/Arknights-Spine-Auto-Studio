@@ -82,6 +82,70 @@ export function enemyMetaFromKey(key) {
     skin: { 默认: { 战斗: { file: id } } },
   };
 }
+/**
+ * 反查敌人中文名：通过 PRTS 搜索翻径，找到 prefix 包含该 ID 的 SPINEDATA 页面并取 name 字段。
+ */
+let _enemyIndexCache = null;
+
+/**
+ * 敌人翻转索引：通过「模板:敌人信息/common2」的嵌入页列表枚举全部敌人页，
+ * 批量获取各页面 <敌人名>/spine 子页，解析 SPINEDATA 建立
+ * spineId -> { name, pageTitle } 映射。结果在进程内缓存，可选写入本地文件复用。
+ */
+export async function enemyIndex({ force = false, cacheFile = null, onLog = () => {} } = {}) {
+  if (_enemyIndexCache && !force) return _enemyIndexCache;
+  if (!force && cacheFile) {
+    try {
+      const j = JSON.parse(await readFile(cacheFile, 'utf8'));
+      if (j && typeof j === 'object' && Object.keys(j).length > 3) { _enemyIndexCache = j; return j; }
+    } catch { /* 无缓存文件 */ }
+  }
+  const titles = [];
+  let cont = null;
+  for (;;) {
+    let u = WIKI + '/api.php?action=query&list=embeddedin&eititle=' + encodeURIComponent('模板:敌人信息/common2') + '&eilimit=500&format=json';
+    if (cont) u += '&eicontinue=' + encodeURIComponent(cont);
+    const j = JSON.parse((await fetchBytes(u)).toString('utf8'));
+    for (const x of (j?.query?.embeddedin || [])) titles.push(x.title);
+    cont = j?.continue?.eicontinue || null;
+    if (!cont) break;
+  }
+  const map = {};
+  for (let i = 0; i < titles.length; i += 50) {
+    const chunk = titles.slice(i, i + 50).map((t) => t + '/spine');
+    const u = WIKI + '/api.php?action=query&titles=' + encodeURIComponent(chunk.join('|')) + '&prop=revisions&rvprop=content&rvslots=main&format=json';
+    let j = null;
+    try { j = JSON.parse((await fetchBytes(u)).toString('utf8')); } catch { continue; }
+    for (const pg of Object.values(j?.query?.pages || {})) {
+      const rev = pg?.revisions?.[0]?.slots?.main?.['*'];
+      if (!rev || typeof rev !== 'string') continue;
+      const pm = rev.match(/"prefix"\s*:\s*"([^"]*enemy_spine\/([^\/"]+)[\/"]?)/);
+      if (!pm) continue;
+      const id = pm[2];
+      const nm = rev.match(/"name"\s*:\s*"([^"]*)"/);
+      map[id] = { name: nm ? nm[1] : pg.title.replace(/\/spine$/, ''), pageTitle: pg.title.replace(/\/spine$/, '') };
+    }
+  }
+  _enemyIndexCache = map;
+  if (cacheFile) { try { await writeFile(cacheFile, JSON.stringify(map)); } catch { /* 忽略 */ } }
+  onLog('[prts] 敌人翻转索引已建立：' + Object.keys(map).length + ' 个');
+  return map;
+}
+
+/** 反查敌人中文名：用翻转索引找 spineId 对应的页面名与 SPINEDATA name 。 */
+export async function enemyNameFromId(enemyId, { onLog = () => {} } = {}) {
+  const id = String(enemyId ?? '').trim();
+  if (!isEnemyKey(id)) return null;
+  try {
+    const idx = await enemyIndex({ onLog });
+    const hit = idx[id];
+    if (hit) return { name: hit.name, pageTitle: hit.pageTitle };
+  } catch (e) {
+    if (onLog) onLog('[prts] 敌人名反查失败 ' + e.message);
+  }
+  return null;
+}
+
 export function normalizeCharKey(key) {
   const text = String(key ?? '').trim();
   if (!text) return null;
@@ -301,6 +365,52 @@ const { parseSkeleton } = await import('./skel.mjs');
     version,
     animations: parseSkeleton(skelBytes).animations?.map((a) => ({ name: a.name, duration: a.duration })) ?? [],
   };
+  // 保存 PRTS 元数据（角色名 + 皮肤/视图清单），供本地模型库按 PRTS 目录逻辑展示
+  try {
+    await writeFile(
+      join(targetDir, 'meta.json'),
+      JSON.stringify({ charId, name: meta.name ?? charId, kind, prefix: meta.prefix, skin: meta.skin, fetchedAt: new Date().toISOString() }, null, 2),
+    );
+  } catch (metaErr) {
+    if (onLog) onLog(`[prts] 保存 meta.json 失败：${metaErr.message}`);
+  }
+  // 补全干员/敌人资料（职业/稀有度/阵营/属性等）并合并写回 meta.json
+  try {
+    const { enrichCharMeta, enrichEnemyMeta } = await import('./info.mjs');
+    const extra = kind === 'char' ? await enrichCharMeta(charId) : (meta.name && meta.name !== charId ? await enrichEnemyMeta(meta.name) : null);
+    if (extra && extra.info && Object.keys(extra.info).length) {
+      const info = extra.info;
+      const merged = { charId, name: meta.name ?? charId, kind, prefix: meta.prefix, skin: meta.skin, fetchedAt: new Date().toISOString() };
+      merged.info = info; merged.pageTitle = extra.pageTitle;
+      merged.class = info['\u804c\u4e1a'] || '';
+      merged.rarity = parseInt(info['\u7a00\u6709\u5ea6'], 10) || 0;
+      merged.branch = info['\u5206\u652f'] || info['\u5b50\u804c\u4e1a'] || '';
+      merged.faction = info['\u6240\u5c5e\u56fd\u5bb6'] || info['\u6240\u5c5e\u7ec4\u7ec7'] || '';
+      merged.position = info['\u4f4d\u7f6e'] || '';
+      merged.tags = info['\u6807\u7b7e'] || '';
+      merged.trait = info['\u7279\u6027'] || '';
+      merged.enemyLevel = info['\u5730\u4f4d\u7ea7\u522b'] || '';
+      merged.enemyType = info['\u4f24\u5bb3\u7c7b\u578b'] || '';
+      merged.enemyAttack = info['\u653b\u51fb\u65b9\u5f0f'] || '';
+      merged.enemyMove = info['\u884c\u52a8\u65b9\u5f0f'] || '';
+      merged.description = info['\u63cf\u8ff0'] || '';
+      merged.stats = extra.stats || null;
+      // 美术资源（头像 / 精英立绘 / 皮肤立绘 / 职业图标）
+      try {
+        const { enrichArt } = await import('./info.mjs');
+        const art = await enrichArt({ charId, name: merged.name, pageTitle: extra.pageTitle, kind, meta: merged, dirPath: targetDir, onLog });
+        if (art) merged.art = art;
+      } catch (artErr) {
+        if (onLog) onLog(`[prts] 美术下载跳过：${artErr.message}`);
+      }
+
+      await writeFile(join(targetDir, 'meta.json'), JSON.stringify(merged, null, 2));
+      if (onLog) onLog(`[prts] 资料已补全：${extra.pageTitle}`);
+    }
+  } catch (enrichErr) {
+    if (onLog) onLog(`[prts] 资料补全跳过：${enrichErr.message}`);
+  }
+
   if (onLog) onLog(`[prts] 完成：${result.characterName}（${charId} / ${chosen.skin} / ${chosen.view}，Spine ${version}）`);
   return result;
 }

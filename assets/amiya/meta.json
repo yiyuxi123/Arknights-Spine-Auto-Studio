@@ -1,0 +1,138 @@
+{
+  "charId": "char_002_amiya",
+  "name": "阿米娅",
+  "kind": "char",
+  "prefix": "https://torappu.prts.wiki/assets/char_spine/char_002_amiya/",
+  "skin": {
+    "报童": {
+      "正面": {
+        "file": "char_002_amiya_winter_1/front/char_002_amiya_winter_1"
+      },
+      "基建": {
+        "file": "char_002_amiya_winter_1/build/build_char_002_amiya_winter_1"
+      },
+      "背面": {
+        "file": "char_002_amiya_winter_1/back/char_002_amiya_winter_1"
+      }
+    },
+    "播种者": {
+      "正面": {
+        "file": "char_002_amiya_test_1/front/char_002_amiya_test_1"
+      },
+      "基建": {
+        "file": "char_002_amiya_test_1/build/build_char_002_amiya_test_1"
+      },
+      "背面": {
+        "file": "char_002_amiya_test_1/back/char_002_amiya_test_1"
+      }
+    },
+    "见习联结者": {
+      "背面": {
+        "file": "char_002_amiya_epoque_4/back/char_002_amiya_epoque_4"
+      },
+      "正面": {
+        "file": "char_002_amiya_epoque_4/front/char_002_amiya_epoque_4"
+      },
+      "基建": {
+        "file": "char_002_amiya_epoque_4/build/build_char_002_amiya_epoque_4"
+      }
+    },
+    "默认": {
+      "正面": {
+        "file": "defaultskin/front/char_002_amiya"
+      },
+      "背面": {
+        "file": "defaultskin/back/char_002_amiya"
+      },
+      "基建": {
+        "file": "defaultskin/build/build_char_002_amiya"
+      }
+    }
+  },
+  "updatedAt": "2026-07-31T14:50:59.728Z",
+  "info": {
+    "干员名": "阿米娅",
+    "干员名jp": "アーミヤ",
+    "干员外文名": "Amiya",
+    "干员id": "char_002_amiya",
+    "干员序号": "55",
+    "特性": "攻击造成法术伤害",
+    "稀有度": "4",
+    "职业": "术师",
+    "分支": "中坚术师",
+    "情报编号": "R001",
+    "所属国家": "罗德岛",
+    "所属组织": "",
+    "所属团队": "",
+    "位置": "远程位",
+    "标签": "输出",
+    "画师": "唯@W",
+    "中文配音": "陶典",
+    "日文配音": "黑泽朋世",
+    "韩文配音": "李智贤",
+    "英文配音": "Emma Ballantine",
+    "精英0介绍": "阿米娅最常穿着的服装，过大的尺寸似乎暗示了这件衣服曾不属于她\n不少细节部分都经过手工改造，而时间的痕迹也多有残留。",
+    "精英1介绍": "阿米娅最常穿着的服装，过大的尺寸仿佛述说着这件衣服曾不属于她的事实。即便如此，她也仔细地打理着这件衣服，让它看起来就像新的一样。",
+    "精英2介绍": "衣服需要修补，\n伤痛需要弥合。",
+    "时装1名称": "报童",
+    "时装1系列": "忒斯特收藏/I",
+    "时装1颜色": "#313131",
+    "时装1介绍": "LIMITED EDITION\n忒斯特™收藏系列/报童。限定区域供应。经典款式复刻，采用绝佳材质，附加特别缝纫细节。附带特别设计的开信刀。",
+    "时装2名称": "见习联结者",
+    "时装2系列": "忒斯特收藏/II",
+    "时装2颜色": "#06c1a2",
+    "时装2介绍": "忒斯特收藏系列/见习联结者。阿米娅在罗德岛餐厅打工时的穿着。蓬松外套很防寒，也能装进一只企鹅大小的东西。",
+    "时装3名称": "播种者",
+    "时装3系列": "忒斯特收藏/IV",
+    "时装3颜色": "#ff9700",
+    "时装3介绍": "忒斯特收藏系列/播种者。宽松舒适的出游配搭，独家附赠小型登山包与一个育苗套装。设计师有一个小小的愿望，她希望大家能够帮忙实现。",
+    "精英0缩放": "2",
+    "精英0坐标x": "-23",
+    "精英0坐标y": "-67",
+    "精英1缩放": "2",
+    "精英1坐标x": "8",
+    "精英1坐标y": "-161",
+    "精英2缩放": "2.6",
+    "精英2坐标x": "-151",
+    "精英2坐标y": "-434",
+    "时装1缩放": "2",
+    "时装1坐标x": "-21",
+    "时装1坐标y": "-56",
+    "时装2缩放": "2",
+    "时装2坐标x": "6",
+    "时装2坐标y": "-76",
+    "时装3缩放": "2",
+    "时装3坐标x": "-16",
+    "时装3坐标y": "-82",
+    "子职业": "中坚术师"
+  },
+  "pageTitle": "阿米娅",
+  "class": "术师",
+  "rarity": 4,
+  "branch": "中坚术师",
+  "faction": "罗德岛",
+  "position": "远程位",
+  "tags": "输出",
+  "trait": "攻击造成法术伤害",
+  "enemyLevel": "",
+  "enemyType": "",
+  "enemyAttack": "",
+  "enemyMove": "",
+  "description": "",
+  "stats": null,
+  "enrichedAt": "2026-07-31T14:50:59.728Z",
+  "art": {
+    "avatar": "avatar.png",
+    "elite": [
+      "elite1.png",
+      "elite2.png",
+      "elite3.png"
+    ],
+    "classIcon": null,
+    "branchIcon": "branch.png",
+    "skins": {
+      "默认": "skin_char_002_amiya.png"
+    },
+    "portrait": "elite3.png"
+  }
+}

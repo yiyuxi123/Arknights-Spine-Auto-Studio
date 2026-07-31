@@ -19,6 +19,8 @@ const state = {
   outputs: [],
   jobs: [],
   outDir: '',
+  assetsDir: '',
+  modelFilter: { kind: 'all', class: '', rarity: '', faction: '' },
 };
 
 const TPL = [
@@ -223,7 +225,11 @@ async function refreshState() {
     state.models = s.models || [];
     state.outputs = s.outputs || [];
     state.outDir = s.outDir || '';
+    state.assetsDir = s.assetsDir || '';
     renderModels();
+    renderDirFilters();
+    renderHiModelSelect();
+    updateModelCount();
     renderOutputs();
     const c = $('#chip-chrome');
     if (s.chrome) { c.textContent = 'Chrome ✓'; c.className = 'chip ok'; }
@@ -395,8 +401,9 @@ async function fetchModel(force) {
     });
     const result = await waitJob(jobId);
     await refreshState();
-    const m = state.models.find((x) => x.id === result.charId);
-    selectModel(m || { id: result.charId, name: result.characterName, dir: result.dir, animations: result.animations, files: result.files });
+    const skelBase = String(result.files?.skel || '').split(/[\\/]/).pop().replace(/\.skel$/, '');
+    const m = state.models.find((x) => x.id === result.charId + '|' + skelBase) || state.models.find((x) => x.groupId === result.charId);
+    selectModel(m || { id: result.charId + '|' + skelBase, groupId: result.charId, name: result.characterName, displayName: result.characterName, skinLabel: result.skin || '默认', viewLabel: result.view || '', base: skelBase, kind: result.kind, source: result.kind === 'enemy' ? 'prts-enemy' : 'prts', dir: result.dir, animations: result.animations, files: result.files });
     $('#fetch-done').hidden = false;
     $('#resolve-out').textContent = '✅ 三件套就绪：' + (result.files?.skel || '');
   } catch (err) {
@@ -409,6 +416,110 @@ async function fetchModel(force) {
 $('#btn-fetch').addEventListener('click', () => fetchModel(false));
 $('#btn-fetch-force').addEventListener('click', () => fetchModel(true));
 
+function modelKindTag(m) {
+  if (m.kind === 'enemy') return '敌人';
+  if (m.kind === 'build') return '基建';
+  return m.source === 'prts' ? 'PRTS' : '本地';
+}
+function modelEntryLabel(m) {
+  let label = m.skinLabel || '';
+  if (m.viewLabel) label = label ? label + ' / ' + m.viewLabel : m.viewLabel;
+  return label || '默认';
+}
+function animStat(m) {
+  const list = m.animations || [];
+  const total = list.reduce((s, a) => s + (parseFloat(a.duration) || 0), 0);
+  return list.length ? list.length + ' 个动作 · ' + total.toFixed(1) + 's' : '无动画信息';
+}
+function rarityStars(r) {
+  const n = parseInt(r, 10) || 0;
+  if (n < 1 || n > 6) return '';
+  return '<span class="stars" title="' + n + '星">' + '★'.repeat(n) + '☆'.repeat(6 - n) + '</span>';
+}
+// art 路径转 /assets/ URL
+function artUrl(m, key) {
+  const file = m.art && m.art[key];
+  if (!file || !m.groupId) return '';
+  return '/assets/' + encodeURIComponent(m.groupId) + '/art/' + encodeURIComponent(file);
+}
+function modelAvatar(m) {
+  return artUrl(m, 'avatar') ||
+    (m.art && m.art.elite && m.art.elite.length ? artUrl(m, 'elite' + m.art.elite.length) : '') ||
+    artUrl(m, 'portrait');
+}
+// 分组过滤（类型/职业/稀有度/阵营/搜索）
+function groupModels(filter) {
+  const groups = new Map();
+  const f = state.modelFilter || {};
+  const kw = String(filter || '').trim().toLowerCase();
+  for (const m of state.models) {
+    if (f.kind && f.kind !== 'all') {
+      const mk = m.kind === 'enemy' ? 'enemy' : m.kind === 'build' ? 'build' : 'char';
+      if (mk !== f.kind) continue;
+    }
+    if (f.class && m.class !== f.class) continue;
+    if (f.rarity && String(m.rarity || '') !== f.rarity) continue;
+    if (f.faction && m.faction !== f.faction) continue;
+    const hay = [m.name, m.displayName, m.groupId, m.id, m.skinLabel, m.viewLabel, m.base, m.kind, m.class, m.branch, m.faction, m.enemyLevel].join(' ').toLowerCase();
+    if (kw && !hay.includes(kw)) continue;
+    if (!groups.has(m.groupId)) groups.set(m.groupId, []);
+    groups.get(m.groupId).push(m);
+  }
+  return groups;
+}
+function kindOf(m) {
+  return m.kind === 'enemy' ? 'enemy' : m.kind === 'build' ? 'build' : 'char';
+}
+function renderDirFilters() {
+  const kinds = [
+    { key: 'all', label: '全部' },
+    { key: 'char', label: '干员' },
+    { key: 'enemy', label: '敌人' },
+    { key: 'build', label: '基建' },
+  ];
+  const box = $('#dir-kind');
+  if (box) {
+    box.innerHTML = '';
+    for (const k of kinds) {
+      const n = state.models.filter((m) => kindOf(m) === k.key || k.key === 'all').length;
+      const chip = document.createElement('span');
+      chip.className = 'filter-chip' + (state.modelFilter.kind === k.key ? ' sel' : '');
+      chip.textContent = k.label + ' ' + n;
+      chip.addEventListener('click', () => { state.modelFilter.kind = k.key; renderModels(); renderDirFilters(); });
+      box.appendChild(chip);
+    }
+  }
+  const opts = (sel, items, allLabel) => {
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">' + allLabel + '</option>';
+    for (const it of items) {
+      const o = document.createElement('option');
+      o.value = it.key;
+      o.textContent = it.label;
+      sel.appendChild(o);
+    }
+    if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  };
+  const cls = new Map();
+  const fac = new Map();
+  const rar = new Map();
+  for (const m of state.models) {
+    if (m.class) cls.set(m.class, (cls.get(m.class) || 0) + 1);
+    if (m.faction) fac.set(m.faction, (fac.get(m.faction) || 0) + 1);
+    if (m.rarity) rar.set(String(m.rarity), (rar.get(String(m.rarity)) || 0) + 1);
+  }
+  opts($('#f-class'), [...cls.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ key: k, label: k + ' (' + n + ')' })), '职业全部');
+  opts($('#f-rarity'), [...rar.entries()].sort((a, b) => b[0] - a[0]).map(([k, n]) => ({ key: k, label: '★'.repeat(parseInt(k, 10)) + ' (' + n + ')' })), '稀有度全部');
+  opts($('#f-faction'), [...fac.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ key: k, label: k + ' (' + n + ')' })), '阵营全部');
+}
+function bindFilterSelects() {
+  for (const [id, key] of [['#f-class', 'class'], ['#f-rarity', 'rarity'], ['#f-faction', 'faction']]) {
+    const el = $(id);
+    if (!el) continue;
+    el.onchange = () => { state.modelFilter[key] = el.value; renderModels(); };
+  }
+}
 function renderModels() {
   const box = $('#model-list');
   if (!state.models.length) {
@@ -418,21 +529,101 @@ function renderModels() {
       '</ol></div>';
     return;
   }
+  const groups = groupModels($('#model-search')?.value);
   box.innerHTML = '';
-  for (const m of state.models) {
-    const el = document.createElement('div');
-    el.className = 'model-card' + (state.current?.id === m.id ? ' sel' : '');
-    const tag = m.source === 'prts-enemy' ? '敌人' : m.source === 'prts' ? 'PRTS' : '本地';
-    el.innerHTML = `
-      <div class="name">${escapeHtml(m.name)}<span class="tag">${tag}</span></div>
-      <div class="id">${escapeHtml(m.id)}</div>
-      <div class="chips">${(m.animations || []).map((a) => '<span class="chip-anim">' + escapeHtml(a.name) + ' ' + a.duration.toFixed(2) + 's</span>').join('') || '<span class="muted">无动画信息</span>'}</div>`;
-    el.addEventListener('click', () => selectModel(m));
-    box.appendChild(el);
+  if (!groups.size) {
+    box.innerHTML = '<div class="muted">没有匹配的模型，调整筛选条件或换个关键词试试。</div>';
+    return;
+  }
+  // 第一层：类别（干员/敌人/其他）；第二层：职业；第三层：角色卡片（皮肤/视图）
+  const kindOrder = ['char', 'enemy', 'build'];
+  const kindLabel = { char: '干员', enemy: '敌人', build: '基建' };
+  for (const kind of kindOrder) {
+    const kindGroups = [...groups.entries()].filter(([, es]) => kindOf(es[0]) === kind);
+    if (!kindGroups.length) continue;
+    const sec = document.createElement('div');
+    sec.className = 'dir-section';
+    sec.innerHTML = '<div class="dir-sec-title"><b>' + kindLabel[kind] + '</b><span class="muted">' + kindGroups.length + ' 位</span></div>';
+    // 职业分组
+    const classGroups = new Map();
+    for (const [gid, es] of kindGroups) {
+      const c = es[0].class || (kind === 'enemy' ? es[0].enemyLevel || '敌人' : '未分类');
+      if (!classGroups.has(c)) classGroups.set(c, []);
+      classGroups.get(c).push([gid, es]);
+    }
+    const classOrder = [...classGroups.entries()].sort((a, b) => b[1].length - a[1].length);
+    for (const [cls, cgs] of classOrder) {
+      const csec = document.createElement('div');
+      csec.className = 'dir-subsec';
+      csec.innerHTML = '<div class="dir-sub-title"><span class="cls-dot"></span><b>' + escapeHtml(cls) + '</b><span class="muted">' + cgs.length + '人</span></div>';
+      const grid = document.createElement('div');
+      grid.className = 'model-grid';
+      for (const [gid, entries] of cgs) {
+        const first = entries[0];
+        const card = document.createElement('div');
+        card.className = 'model-card';
+        const selEntry = entries.find((e) => state.current?.id === e.id);
+        if (selEntry) card.classList.add('sel');
+        const avatar = modelAvatar(first);
+        const head = document.createElement('div');
+        head.className = 'mh';
+        head.innerHTML =
+          (avatar ? '<img class="m-avatar" src="' + avatar + '" alt="" loading="lazy" onerror="this.style.display=\'none\'">' : '') +
+          '<div class="mh-main"><div class="name">' + escapeHtml(first.name) +
+          (first.kind === 'enemy' ? '<span class="tag enemy">' + escapeHtml(first.enemyLevel || '敌人') + '</span>' : '<span class="tag">' + escapeHtml(first.class || modelKindTag(first)) + '</span>') +
+          rarityStars(first.rarity) + '</div>' +
+          '<div class="id">' + escapeHtml(gid) + ' · ' + entries.length + ' 个皮肤/视图</div>' +
+          (first.branch || first.faction || first.position ? '<div class="meta">' +
+            (first.branch ? '<span class="chip-sm">' + escapeHtml(first.branch) + '</span>' : '') +
+            (first.faction ? '<span class="chip-sm fac">' + escapeHtml(first.faction) + '</span>' : '') +
+            (first.position ? '<span class="chip-sm">' + escapeHtml(first.position) + '</span>' : '') +
+            '</div>' : '') +
+          '</div>';
+        card.appendChild(head);
+        // 皮肤 → 视图 两级目录
+        const skinOrder = [];
+        const bySkin = new Map();
+        for (const e of entries) {
+          const sk = e.skinLabel || '默认';
+          if (!bySkin.has(sk)) { bySkin.set(sk, []); skinOrder.push(sk); }
+          bySkin.get(sk).push(e);
+        }
+        const skins = document.createElement('div');
+        skins.className = 'm-skins';
+        for (const sk of skinOrder) {
+          const sec2 = document.createElement('div');
+          sec2.className = 'm-skin' + (selEntry && selEntry.skinLabel === sk ? ' open' : '');
+          const skinFile = first.art && first.art.skins && first.art.skins[sk];
+          sec2.innerHTML = '<div class="m-skin-name">' +
+            (skinFile ? '<img class="skin-thumb" src="/assets/' + encodeURIComponent(first.groupId) + '/art/' + encodeURIComponent(skinFile) + '" loading="lazy" onerror="this.style.display=\'none\'">' : '') +
+            escapeHtml(sk) + '<span class="muted">' + bySkin.get(sk).length + ' 个视图</span></div>';
+          const rows = document.createElement('div');
+          rows.className = 'm-views';
+          for (const e of bySkin.get(sk)) {
+            const row = document.createElement('div');
+            row.className = 'm-view' + (state.current?.id === e.id ? ' sel' : '');
+            row.innerHTML = '<div class="m-view-main"><b>' + escapeHtml(modelEntryLabel(e)) + '</b><span class="muted">' + escapeHtml(e.base) + '</span></div>' +
+              '<div class="m-view-stat">' + escapeHtml(animStat(e)) + (e.viewLabel ? '<span class="tag mini">' + escapeHtml(e.viewLabel) + '</span>' : '') + '</div>';
+            row.title = '选择：' + e.name + '（' + e.base + '）';
+            row.addEventListener('click', (ev) => { ev.stopPropagation(); selectModel(e); });
+            rows.appendChild(row);
+          }
+          sec2.appendChild(rows);
+          skins.appendChild(sec2);
+        }
+        card.appendChild(skins);
+        grid.appendChild(card);
+      }
+      csec.appendChild(grid);
+      sec.appendChild(csec);
+    }
+    box.appendChild(sec);
   }
 }
 
+
 function selectModel(m) {
+  if (!m) return;
   if (state.current?.id !== m.id) {
     // 切换模型：清空高清化资源、预览与时间轴，避免串模型
     const hadPrev = !!state.previews;
@@ -450,24 +641,73 @@ function selectModel(m) {
   }
   state.current = m;
   renderModels();
+  renderHiModelSelect();
+  const fullName = m.name + ' · ' + modelEntryLabel(m);
   const label = state.assetSet?.label || '原图';
-  $('#gen-model').innerHTML = '<b>' + escapeHtml(m.name) + '</b>（' + escapeHtml(m.id) + '）';
+  $('#gen-model').innerHTML = '<b>' + escapeHtml(fullName) + '</b>（' + escapeHtml(m.groupId || m.id) + '）';
   $('#gen-res').textContent = '资源：' + label;
-  $('#tl-model').innerHTML = '<b>' + escapeHtml(m.name) + '</b>（' + escapeHtml(m.id) + '）';
+  $('#tl-model').innerHTML = '<b>' + escapeHtml(fullName) + '</b>（' + escapeHtml(m.groupId || m.id) + '）';
   $('#tl-res').textContent = '资源：' + label + '（预览与生成都将使用这套资源）';
-  $('#hi-model-state').innerHTML = '<b>' + escapeHtml(m.name) + '</b>（' + escapeHtml(m.id) + '）';
+  $('#hi-model-state').innerHTML = '<b>' + escapeHtml(fullName) + '</b>（' + escapeHtml(m.groupId || m.id) + '）';
   $('#hi-res-state').textContent = '资源：' + label;
   const anims = $('#gen-anims');
   anims.innerHTML = (m.animations || []).map((a) => '<span class="chip-anim">' + escapeHtml(a.name) + ' ' + a.duration.toFixed(2) + 's</span>').join('') || '';
-  localStorage.setItem('zd.current', JSON.stringify({ id: m.id, name: m.name }));
-  const hiSel = $('#h-model');
-  const exists = [...hiSel.options].some((o) => o.value === m.id);
-  if (!exists) {
-    hiSel.add(new Option(m.name + '（' + m.id + '）', m.id));
-    hiSel.value = m.id;
-  }
+  localStorage.setItem('zd.current', JSON.stringify({ id: m.id, name: m.name, groupId: m.groupId }));
   updateGenTlState();
 }
+
+// 高清化页的模型选择器：按角色分组（角色 → 皮肤/视图）
+function updateModelCount() {
+  const el = $('#model-count');
+  if (!el) return;
+  const n = groupModels($('#model-search')?.value).size;
+  el.textContent = n ? '共 ' + n + ' 个角色' : '';
+}
+$('#model-search')?.addEventListener('input', () => { renderModels(); updateModelCount(); });
+
+function renderHiModelSelect() {
+  const sel = $('#h-model');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '';
+  const groups = groupModels('');
+  for (const [gid, entries] of groups) {
+    const og = document.createElement('optgroup');
+    og.label = entries[0].name + "?" + gid + "?";
+    for (const e of entries) {
+      const opt = document.createElement('option');
+      opt.value = e.id;
+      opt.textContent = e.name + " ? " + modelEntryLabel(e);
+      og.appendChild(opt);
+    }
+    sel.appendChild(og);
+  }
+  if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  else if (state.current && [...sel.options].some((o) => o.value === state.current.id)) sel.value = state.current.id;
+}
+$('#h-model')?.addEventListener('change', () => {
+  const m = state.models.find((x) => x.id === $('#h-model').value);
+  if (m) selectModel(m);
+});
+
+
+$('#btn-enrich')?.addEventListener('click', async () => {
+  const btn = $('#btn-enrich');
+  const info = $('#enrich-info');
+  if (!btn || !info) return;
+  btn.disabled = true;
+  info.textContent = '⏳ 正在批量补全资料与美术（需访问 PRTS，请稍候）…';
+  try {
+    const r = await api('/api/enrich', {});
+    const result = await waitJob(r.jobId);
+    info.textContent = '✅ ' + (result.message || '补全完成') + '（' + (result.done || 0) + '/' + (result.total || 0) + ' 个目录）';
+    await refreshState();
+  } catch (err) {
+    info.textContent = '❌ 补全失败：' + (err && err.message ? err.message : err);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 $('#btn-refresh').addEventListener('click', refreshState);
 $('#btn-refresh-out').addEventListener('click', refreshState);
@@ -713,30 +953,33 @@ function buildRunBody(extra = {}) {
   const m = state.current;
   if (!m) throw new Error('请先在「① 拉取模型」选择一个模型');
   const assets = currentAssets();
+  if (!assets || !assets.skel || !assets.atlas || !assets.png) {
+    throw new Error('模型三件套不完整：请先拉取模型（或重新选择本地模型）');
+  }
   const body = {
-    key: m.id,
+    key: m.groupId || m.id,
+    skel: assets.skel,
+    atlas: assets.atlas,
+    png: assets.png,
     fps: $('#g-fps').value,
     size: $('#g-size').value,
     format: $('#g-format').value,
     mix: $('#g-mix').value,
     bg: $('#g-bg').value || '00000000',
-    outName: m.name,
+    outName: m.name + '-' + modelEntryLabel(m).replace(/[\\/]+/g, '_'),
   };
-  if (assets?.isHi && assets.skel && assets.atlas && assets.png) {
+  if (assets?.isHi) {
     // 已高清化：直接使用高清资源，不再重复放大
-    body.skel = assets.skel;
-    body.atlas = assets.atlas;
-    body.png = assets.png;
     body.upscale = '1';
     body.sr = false;
   } else {
-    body.source = 'prts';
     body.upscale = $('#g-upscale').value;
     body.sr = $('#g-sr').checked;
     body.srEngine = $('#g-sr-engine').value;
   }
   return { ...body, ...extra };
 }
+
 
 $('#btn-run').addEventListener('click', async () => {
   let body;
@@ -746,12 +989,19 @@ $('#btn-run').addEventListener('click', async () => {
     showTab('models');
     return;
   }
-  if (!state.lastTimeline || !state.lastTimeline.timeline || !state.lastTimeline.timeline.length) {
+  if (!state.queue || !state.queue.length) {
     $('#run-status').textContent = '❌ 请先到「③ 编排时间轴」排好时间轴（可写自然语言生成，也可手动勾选）';
     $('#run-status').className = 'err-inline';
     showTab('timeline');
     return;
   }
+  // 直接快照当前队列（实时时间轴），保证成片与编排页完全一致
+  state.lastTimeline = {
+    character: state.current?.name || 'result',
+    fps: parseInt($('#g-fps').value, 10) || 30,
+    timeline: state.queue.map((s) => ({ action: s.action, loop: !!s.loop, duration: Number(s.duration) || 2, timeScale: Number(s.timeScale) || 1, description: s.description || '' })),
+    mode: 'edited',
+  };
   body.timeline = state.lastTimeline;
   state.lastModelParams = body;
   startJobUI();
@@ -813,11 +1063,11 @@ function onJobDone(result) {
     .join('');
   box.innerHTML = '<h3>✅ 生成完成</h3>' + media +
     '<div class="row wrap" style="margin-top:10px">' +
-    '<button id="btn-open-out" class="ghost">打开输出目录</button>' +
+    '<button id="btn-open-out" class="ghost">在文件夹中显示</button>' +
     '<button id="btn-lb-view" class="ghost">放大预览</button>' +
     '<span class="muted" style="font-family:var(--mono);font-size:12px">' + escapeHtml(result.outBase) + '</span></div>';
   const openBtn = box.querySelector('#btn-open-out');
-  if (openBtn) openBtn.addEventListener('click', () => openFolder(result.outBase));
+  if (openBtn) openBtn.addEventListener('click', () => openFolder(result.files && result.files.length ? result.files[0].path || result.files[0].url : result.outBase));
   const lbBtn = box.querySelector('#btn-lb-view');
   if (lbBtn && result.files && result.files.length) {
     lbBtn.addEventListener('click', () => openLightbox('生成结果', media));
@@ -930,7 +1180,7 @@ $('#btn-hi').addEventListener('click', async () => {
     state.activeJob = jobId;
     const result = await waitJob(jobId);
     $('#hi-result').hidden = false;
-    showImg('#hi-before', '/outputs/' + encodeURIComponent(m.id) + '.png');
+    showImg('#hi-before', assetUrl(m.files.png));
     const png = result.files.find((f) => f.kind === 'png');
     const atlas = result.files.find((f) => f.kind === 'atlas');
     if (png) showImg('#hi-after', png.url);
@@ -1017,7 +1267,7 @@ function renderOutputs() {
         ev.stopPropagation();
         const act = btn.dataset.act;
         if (act === 'view') openLightbox(o.name, media);
-        else if (act === 'folder') openFolder(o.dir || o.url);
+        else if (act === 'folder') openFolder(o.url || o.dir);
         else if (act === 'json') {
           fetch(o.url).then((r) => r.text()).then((txt) => openLightbox(o.name, '<pre class="lb-json">' + escapeHtml(txt) + '</pre>')).catch(() => alert('读取失败'));
         }
@@ -1045,6 +1295,19 @@ $('#lightbox').addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !$('#lightbox').hidden) $('#lightbox').hidden = true;
 });
+
+// 将 assets 下绝对路径转为可访问的 /assets/ URL（用于展示原始贴图）
+// 将 assets 下绝对路径转为可访问的 /assets/ URL（用于展示原始贴图）
+function assetUrl(abs) {
+  if (!abs || !state.assetsDir) return '';
+  let base = String(state.assetsDir).split('\\').join('/');
+  while (base.endsWith('/')) base = base.slice(0, -1);
+  let rel = String(abs).split('\\').join('/').split('?')[0];
+  if (!rel.startsWith(base + '/')) return '';
+  const segs = rel.slice(base.length + 1).split('/').map((s) => encodeURIComponent(s));
+  return '/assets/' + segs.join('/');
+}
+
 
 function openFolder(target) {
   let abs = String(target || '');
@@ -1078,6 +1341,8 @@ function escapeHtml(s) {
 (async function init() {
   connectSse();
   await refreshState();
+  renderDirFilters();
+  bindFilterSelects();
   // 恢复上次的提示词与参数
   try {
     const savedForm = JSON.parse(localStorage.getItem('zd.form') || 'null');

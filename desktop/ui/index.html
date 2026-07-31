@@ -70,6 +70,18 @@
 
     <div class="card">
       <h3>本地模型库 <button id="btn-refresh" class="ghost">刷新</button></h3>
+<div class="dir-filter row wrap">
+  <div id="dir-kind" class="chips"></div>
+  <select id="f-class" class="grow" title="职业"></select>
+  <select id="f-rarity" title="稀有度"></select>
+  <select id="f-faction" class="grow" title="阵营/所属国家"></select>
+  <button id="btn-enrich" class="ghost" title="为本地模型批量补全 PRTS 资料与美术资源（头像/立绘/分支图标/皮肤立绘）">📥 批量补全资料与美术</button>
+  <span id="enrich-info" class="muted"></span>
+</div>
+<div class="row wrap" style="margin-bottom:10px">
+  <input id="model-search" class="grow" placeholder="🔍 搜索角色 / ID / 皮肤 / 视图，如：阿米娅、skadi、泳装、KFC…">
+  <span class="muted" id="model-count"></span>
+</div>
       <div id="model-list" class="model-grid"></div>
     </div>
   </section>
