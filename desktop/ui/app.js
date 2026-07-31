@@ -90,28 +90,33 @@ function connectSse() {
   es.onerror = () => { $('#chip-srv').textContent = '服务 重连中…'; $('#chip-srv').className = 'chip bad'; };
 }
 
-function waitJob(jobId) {
+function waitJob(jobId, timeoutMs = 900000) {
   return new Promise((resolve, reject) => {
     waiters.set(jobId, { resolve, reject });
-    setTimeout(() => {
-      if (waiters.has(jobId)) {
-        waiters.delete(jobId);
-        api('/api/jobs').then(({ jobs }) => {
-          const j = jobs.find((x) => x.id === jobId);
-          if (!j) return reject(new Error('任务不存在'));
-          if (j.status === 'done') resolve(j.result);
-          else if (j.status === 'error') reject(new Error(j.error || '任务失败'));
-          else reject(new Error('等待任务超时'));
-        }).catch(reject);
+    // SSE 事件优先（快）；轮询作为兜底，长渲染（大画布/高帧率）不会误报超时
+    const t0 = Date.now();
+    const poll = async () => {
+      try {
+        const { jobs } = await api('/api/jobs');
+        const j = jobs.find((x) => x.id === jobId);
+        if (!j) { if (waiters.has(jobId)) { waiters.delete(jobId); return reject(new Error('任务不存在')); } return; }
+        if (j.status === 'done') { if (waiters.has(jobId)) { waiters.delete(jobId); return resolve(j.result); } return; }
+        if (j.status === 'error') { if (waiters.has(jobId)) { waiters.delete(jobId); return reject(new Error(j.error || '任务失败')); } return; }
+      } catch { /* 网络瞬时错误，下一轮继续 */ }
+      if (Date.now() - t0 > timeoutMs) {
+        if (waiters.has(jobId)) { waiters.delete(jobId); return reject(new Error('等待任务超时（' + Math.round(timeoutMs / 60000) + ' 分钟）')); }
+        return;
       }
-    }, 180000);
-  }).finally(() => setBusy(false)); // 无论成功/失败/超时都恢复按钮，防止卡死
-}
+      setTimeout(poll, 3000);
+    };
+    setTimeout(poll, 3000);
+  }).finally(() => setBusy(false)); // 无论成功/失败/超时都恢复按钟，防止卡死
+};
 
 // ---------------------------------------------------------------------------
 // 全局任务锁（防止运行中误点重复提交）
 // ---------------------------------------------------------------------------
-const busyButtons = ['#btn-resolve', '#btn-fetch', '#btn-fetch-force', '#btn-run', '#btn-preview', '#btn-plan', '#btn-compare', '#btn-hi'];
+const busyButtons = ['#btn-resolve', '#btn-fetch', '#btn-fetch-force', '#btn-run', '#btn-preview', '#btn-label', '#btn-plan', '#btn-compare', '#btn-hi'];
 function setBusy(flag) {
   for (const sel of busyButtons) {
     const el = document.querySelector(sel);
@@ -424,7 +429,7 @@ function updateAssetViews() {
   const label = assets ? assets.label : '原图';
   const txt = (el, s) => { const e = $(el); if (e) e.textContent = s; };
   txt('#gen-res', '资源：' + label + (state.current ? ' · ' + state.current.name : ''));
-  txt('#tl-res', '资源：' + label + '（预览与生成都将使用这套资源）');
+  txt('#tl-res', '生成资源：' + label + '（动作预览固定用原始资源，更快）');
   txt('#hi-res-state', '资源：' + label);
   txt('#hi-use-info', '');
   const useBtn = $('#btn-hi-use');
@@ -852,7 +857,7 @@ function selectModel(m) {
   $('#gen-model').innerHTML = '<b>' + escapeHtml(fullName) + '</b>（' + escapeHtml(m.groupId || m.id) + '）' + wsTag;
   $('#gen-res').textContent = '资源：' + label;
   $('#tl-model').innerHTML = '<b>' + escapeHtml(fullName) + '</b>（' + escapeHtml(m.groupId || m.id) + '）' + wsTag;
-  $('#tl-res').textContent = '资源：' + label + '（预览与生成都将使用这些资源）';
+  $('#tl-res').textContent = '生成资源：' + label + '（动作预览固定用原始资源，更快）';
   $('#hi-model-state').innerHTML = '<b>' + escapeHtml(fullName) + '</b>（' + escapeHtml(m.groupId || m.id) + '）';
   $('#hi-res-state').textContent = '资源：' + label;
   const anims = $('#gen-anims');
@@ -1318,7 +1323,7 @@ function onJobDone(result) {
   const box = $('#run-result');
   box.hidden = false;
   const media = (result.files || [])
-    .map((f) => (f.kind === 'mp4' ? '<video src="' + f.url + '" controls></video>' : f.kind === 'gif' || f.kind === 'png' ? '<img src="' + f.url + '">' : ''))
+    .map((f) => (f.kind === 'mp4' ? '<video src="' + f.url + '" controls></video>' : f.kind === 'gif' ? '<img src="' + f.url + '">' : f.kind === 'png' ? '<div class="muted">📁 PNG 帧序列目录：帧文件已保存，点下方「在文件夹中显示」查看</div>' : ''))
     .join('');
   box.innerHTML = '<h3>✅ 生成完成</h3>' + media +
     '<div class="row wrap" style="margin-top:10px">' +
@@ -1338,7 +1343,7 @@ function onJobDone(result) {
 function onJobError(message) {
   setBusy(false);
   $('#run-status').textContent = '❌ ' + message;
-  $('#run-status').className = '';
+  $('#run-status').className = 'err-inline';
 }
 
 // ---------------------------------------------------------------------------
@@ -1467,11 +1472,9 @@ $('#btn-hi').addEventListener('click', async () => {
       }
     }
     $('#hi-info').textContent = '完成：' + done + ' 套成功' + (failed ? '，' + failed + ' 套失败' : '') + '，已自动采用到工作集';
+    $('#hi-use-info').textContent = '✅ 已自动采用 ' + done + ' 套高清资源：动作预览固定用原图（快），最终生成使用高清资源；如需切回原图可点上方「跳过高清化」';
     const useBtn = $('#btn-hi-use');
-    useBtn.hidden = false;
-    useBtn.onclick = () => {
-      $('#hi-use-info').textContent = '✅ 已采用 ' + done + ' 套高清资源，后续预览 / 生成将使用它们';
-    };
+    if (useBtn) useBtn.hidden = true;
   } catch (err) {
     $('#hi-log').innerHTML += '<div class="err">' + escapeHtml(err.message) + '</div>';
   } finally {

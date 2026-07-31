@@ -18,7 +18,7 @@ import { encodePng } from './png.mjs';
 import { loadManifest, findCharacter, downloadCharacter } from './download.mjs';
 import { fetchCharacterFromPrts, listSkinsFromPrts } from './prts.mjs';
 import { prepareUpscaledAssets } from './upscale.mjs';
-import { ensureFfmpeg, renderMp4, ffmpegVersion } from './ffmpeg.mjs';
+import { ensureFfmpeg, renderMp4, ffmpegVersion, createMp4Writer } from './ffmpeg.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -397,27 +397,10 @@ async function cmdRun(args) {
     outputs.push(gifFile);
   }
   if (wantPng || wantMp4) {
-    const frames = await renderFramesToPng({
-      rootDir: root,
-      assets: { skel: relAsset(renderAssets.skel), atlas: relAsset(renderAssets.atlas), png: relAsset(renderAssets.png) },
-      assetsList: renderAssetsList ? renderAssetsList.map((a) => ({ name: a.name, skel: relAsset(a.skel), atlas: relAsset(a.atlas), png: relAsset(a.png) })) : undefined,
-      timeline: plan,
-      width,
-      height,
-      fps,
-      background,
-      mix,
-      onFrame: (f, n) => { if (f % Math.max(1, Math.round(n / 10)) === 0 || f === n) console.log(`  [frames] ${f}/${n}`); },
-    });
-    if (wantPng) {
-      const pngDir = stem + '-frames';
-      fs.mkdirSync(pngDir, { recursive: true });
-      for (const [i, rgba] of frames.entries()) {
-        fs.writeFileSync(path.join(pngDir, `frame-${String(i).padStart(4, '0')}.png`), encodePng(rgba, width, height));
-      }
-      console.log(`[done] ${pngDir} (${frames.length} 帧 PNG)`);
-      outputs.push(pngDir);
-    }
+    const pngDir = wantPng ? stem + '-frames' : null;
+    if (pngDir) fs.mkdirSync(pngDir, { recursive: true });
+    let mp4Writer = null;
+    let mp4File = null;
     if (wantMp4) {
       let ffmpeg;
       if (args.ffmpeg) {
@@ -441,9 +424,32 @@ async function cmdRun(args) {
       // MP4 无透明通道：使用背景色的 RGB 通道合成（默认 00000000 -> 黑色底）
       const bgMatch = String(background).replace('#', '').match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i);
       const bg = bgMatch ? [parseInt(bgMatch[1], 16), parseInt(bgMatch[2], 16), parseInt(bgMatch[3], 16)] : [255, 255, 255];
-      const mp4File = stem + '.mp4';
+      mp4File = stem + '.mp4';
       console.log(`[mp4] 合成背景 RGB(${bg.join(',')}) 并编码 ...`);
-      await renderMp4({ frames, width, height, fps, outFile: mp4File, background: bg, ffmpegPath: ffmpeg.path });
+      mp4Writer = createMp4Writer({ width, height, fps, outFile: mp4File, background: bg, ffmpegPath: ffmpeg.path });
+    }
+    const result = await renderFramesToPng({
+      rootDir: root,
+      assets: { skel: relAsset(renderAssets.skel), atlas: relAsset(renderAssets.atlas), png: relAsset(renderAssets.png) },
+      assetsList: renderAssetsList ? renderAssetsList.map((a) => ({ name: a.name, skel: relAsset(a.skel), atlas: relAsset(a.atlas), png: relAsset(a.png) })) : undefined,
+      timeline: plan,
+      width,
+      height,
+      fps,
+      background,
+      mix,
+      onFrame: async (rgba, idx, n) => {
+        if (pngDir) fs.writeFileSync(path.join(pngDir, `frame-${String(idx - 1).padStart(4, '0')}.png`), encodePng(rgba, width, height));
+        if (mp4Writer) await mp4Writer.write(rgba);
+        if (idx % Math.max(1, Math.round(n / 10)) === 0 || idx === n) console.log(`  [frames] ${idx}/${n}`);
+      },
+    });
+    if (pngDir) {
+      console.log(`[done] ${pngDir} (${result.frames} ? PNG)`);
+      outputs.push(pngDir);
+    }
+    if (mp4Writer) {
+      await mp4Writer.end();
       const sizeKb = (fs.statSync(mp4File).size / 1024).toFixed(1);
       console.log(`[done] ${mp4File} (${sizeKb} KB)`);
       outputs.push(mp4File);
@@ -477,7 +483,6 @@ async function renderFramesToPng({ rootDir, assets, assetsList, timeline, width,
     const segDuration = (seg) => (seg.duration || 0) * Math.max(1, parseInt(seg.repeat, 10) || 1);
     const total = segments.reduce((sum, seg) => sum + segDuration(seg), 0);
     const frameCount = Math.max(1, Math.round(total * fps));
-    const out = [];
     let segIndex = 0, segmentStart = 0, lastCycle = -1;
     for (let f = 0; f < frameCount; f++) {
       const t = f / fps;
@@ -495,10 +500,9 @@ async function renderFramesToPng({ rootDir, assets, assetsList, timeline, width,
       await evalJs(send, `studio.step(${JSON.stringify({ action: seg.action, view: seg.view || 'default', loop: seg.loop, delta: 1 / fps, timeScale: seg.timeScale || 1, restart })})`);
       const dataUrl = await evalJs(send, 'studio.snapshot()');
       const dec = decodePng(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'));
-      out.push(dec.rgba);
-      if (onFrame) onFrame(f + 1, frameCount, seg.action);
+      if (onFrame) await onFrame(dec.rgba, f + 1, frameCount, seg.action);
     }
-    return out;
+    return { frames: frameCount };
   } finally {
     try { cdp?.close?.(); } catch {}
     try { await chrome.close(); } catch {}

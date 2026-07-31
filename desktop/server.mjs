@@ -250,6 +250,7 @@ function listFiles(dir, depth = 0) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
     if (d.name.startsWith('.')) return [];
     if (depth === 0 && d.name === 'hi') return []; // 高清化资源独立目录，不进输出记录
+    if (d.isDirectory() && d.name.endsWith('-frames')) return []; // PNG frame dir: show as one entry, no recursion
     const p = path.join(dir, d.name);
     if (d.isDirectory()) return listFiles(p, depth + 1);
     if (!d.isFile()) return [];
@@ -258,6 +259,20 @@ function listFiles(dir, depth = 0) {
     const url = '/outputs/' + rel.split(/[\\/]/).map(encodeURIComponent).join('/');
     return [{ name: rel, size: st.size, mtime: st.mtimeMs, url, dir: path.dirname(p) }];
   }).sort((a, b) => b.mtime - a.mtime);
+}
+
+// ???? 3 ???????????out/.previews????????
+function pruneOldPreviews() {
+  const pvRoot = path.join(outDir, '.previews');
+  if (!fs.existsSync(pvRoot)) return;
+  const cutoff = Date.now() - 3 * 86400000;
+  try {
+    for (const d of fs.readdirSync(pvRoot, { withFileTypes: true })) {
+      if (!d.isDirectory()) continue;
+      const dp = path.join(pvRoot, d.name);
+      try { if (fs.statSync(dp).mtimeMs < cutoff) fs.rmSync(dp, { recursive: true, force: true }); } catch { /* ?? */ }
+    }
+  } catch { /* ?? */ }
 }
 
 function chromeCandidates() {
@@ -710,13 +725,20 @@ async function handleApi(req, res, url) {
     const jobId = enqueue('run', async () => {
       await main(argv);
       const ext = String(body.format || 'gif').toLowerCase();
-      const wanted = ext === 'all' ? ['.gif', '.mp4', '.png'] : [ext === 'png' ? '.png' : ext === 'mp4' ? '.mp4' : '.gif'];
-      const files = wanted
-        .map((e) => {
-          const p = `${outBase}${e}`;
-          return fs.existsSync(p) ? { path: p, url: `/outputs/${encodeURIComponent(path.basename(p))}`, kind: e.slice(1) } : null;
-        })
-        .filter(Boolean);
+      const files = [];
+      if (ext === 'gif' || ext === 'all') {
+        const p = `${outBase}.gif`;
+        if (fs.existsSync(p)) files.push({ path: p, url: `/outputs/${encodeURIComponent(path.basename(p))}`, kind: 'gif' });
+      }
+      if (ext === 'mp4' || ext === 'all') {
+        const p = `${outBase}.mp4`;
+        if (fs.existsSync(p)) files.push({ path: p, url: `/outputs/${encodeURIComponent(path.basename(p))}`, kind: 'mp4' });
+      }
+      if (ext === 'png' || ext === 'all') {
+        // PNG ?????????-frames
+        const framesDir = `${outBase}-frames`;
+        if (fs.existsSync(framesDir)) files.push({ path: framesDir, url: `/outputs/${encodeURIComponent(path.basename(framesDir))}/`, kind: 'png' });
+      }
       return { outBase, files, timelineFile: `${outBase}.timeline.json`, logs: [] };
     });
     sendJson(res, 202, { ok: true, jobId });
@@ -733,6 +755,7 @@ async function handleApi(req, res, url) {
       }
     }
     const jobId = enqueue('preview', async () => {
+      pruneOldPreviews();
         const { renderActionPreviews } = await import('../src/preview.mjs');
       const tag = safeName(body.outName || 'model') + '-' + Date.now();
       const pvDir = path.join(outDir, '.previews', tag);
@@ -885,6 +908,7 @@ async function handleApi(req, res, url) {
     const modelId = (modelFromKey(String(body.modelId || '')) || {}).groupId || String(body.modelId || '');
     const previewMode = body.mode === 'frame' ? 'frame' : 'anim';
     const jobId = enqueue('label', async () => {
+      pruneOldPreviews();
       let kfDir = null;
       try {
         const cfg = applyConfig();

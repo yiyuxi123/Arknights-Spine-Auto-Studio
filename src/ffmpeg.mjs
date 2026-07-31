@@ -127,3 +127,62 @@ export async function renderMp4({ frames, width, height, fps, outFile, backgroun
   }
   return outFile;
 }
+
+/**
+ * Streaming MP4 writer: create once, write() one RGBA frame at a time,
+ * end() waits for ffmpeg and returns the output path. Only one frame buffer
+ * stays in memory (safe for large canvases / long renders).
+ */
+export function createMp4Writer({ width, height, fps, outFile, background = [255, 255, 255], ffmpegPath }) {
+  const args = [
+    '-y',
+    '-f', 'rawvideo',
+    '-pix_fmt', 'rgb24',
+    '-s', `${width}x${height}`,
+    '-r', String(fps),
+    '-i', '-',
+    '-c:v', 'libx264',
+    '-preset', 'medium',
+    '-crf', '18',
+    '-pix_fmt', 'yuv420p',
+    '-movflags', '+faststart',
+    outFile,
+  ];
+  const proc = spawn(ffmpegPath, args, { stdio: ['pipe', 'ignore', 'pipe'] });
+  let stderr = '';
+  proc.stderr.on('data', (d) => {
+    stderr += d.toString();
+    if (stderr.length > 8192) stderr = stderr.slice(-8192);
+  });
+  const bgR = background[0], bgG = background[1], bgB = background[2];
+  const rgb = Buffer.alloc(width * height * 3);
+  let ended = false;
+  return {
+    write(rgba) {
+      if (ended) throw new Error('createMp4Writer: writer already ended');
+      for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
+        const a = rgba[i + 3] / 255;
+        const inv = 1 - a;
+        rgb[j] = Math.round(rgba[i] * a + bgR * inv);
+        rgb[j + 1] = Math.round(rgba[i + 1] * a + bgG * inv);
+        rgb[j + 2] = Math.round(rgba[i + 2] * a + bgB * inv);
+      }
+      return new Promise((resolve) => {
+        if (!proc.stdin.write(rgb)) proc.stdin.once('drain', resolve);
+        else resolve();
+      });
+    },
+    end() {
+      if (ended) return Promise.resolve(outFile);
+      ended = true;
+      proc.stdin.end();
+      return new Promise((resolve, reject) => {
+        proc.on('close', (code) => {
+          if (code !== 0) reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-1200)}`));
+          else resolve(outFile);
+        });
+        proc.on('error', reject);
+      });
+    },
+  };
+}

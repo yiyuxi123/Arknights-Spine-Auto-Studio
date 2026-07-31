@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession, rmrfRetry } from './cdp.mjs';
-import { encodeGif } from './gif.mjs';
+import { createGifEncoder } from './gif.mjs';
 import { decodePng } from './png.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -61,7 +61,7 @@ export async function renderTimelineToGif({
     const segDuration = (seg) => (seg.duration || 0) * Math.max(1, parseInt(seg.repeat, 10) || 1);
     const total = segments.reduce((sum, seg) => sum + segDuration(seg), 0);
     const frameCount = Math.max(1, Math.round(total * fps));
-    const rgbaFrames = [];
+    const gifEncoder = createGifEncoder(width, height, { fps });
     let segIndex = 0;
     let segmentStart = 0;
     let lastCycle = -1;
@@ -93,11 +93,12 @@ export async function renderTimelineToGif({
       if (decoded.width !== width || decoded.height !== height) {
         throw new Error(`frame size mismatch: ${decoded.width}x${decoded.height} != ${width}x${height}`);
       }
-      rgbaFrames.push(decoded.rgba);
+      gifEncoder.write(decoded.rgba);
+      decoded.rgba = null; // ???????????????
       if (onFrame) onFrame(f + 1, frameCount, seg.action);
     }
 
-    const gif = encodeGif(rgbaFrames, width, height, { fps });
+    const gif = gifEncoder.finish();
     fs.writeFileSync(outFile, gif);
     return { frames: frameCount, seconds: total, fps, outFile, bytes: gif.length };
   } finally {

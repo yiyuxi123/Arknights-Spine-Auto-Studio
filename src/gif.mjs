@@ -192,53 +192,73 @@ function lzwEncode(indices, minCodeSize) {
 // ---------------------------------------------------------------------------
 export { medianCut, quantize, lzwEncode };
 
-export function encodeGif(frames, width, height, { fps = 15, maxColors = 256, dither = true } = {}) {
-  if (!frames || frames.length === 0) throw new Error('encodeGif: no frames');
-  const palette = medianCut(frames[0], width, height, maxColors);
+/**
+ * Streaming GIF89a encoder: create once, write() one RGBA frame at a time,
+ * finish() returns the complete file buffer. Only the current frame stays in
+ * memory (safe for 1280x1280@60fps long renders that would otherwise hold GBs).
+ */
+export function createGifEncoder(width, height, { fps = 15, maxColors = 256 } = {}) {
   const chunks = [];
   const push = (buf) => chunks.push(buf);
-
-  push(Buffer.from('GIF89a'));
-  const descriptor = Buffer.alloc(7);
-  descriptor.writeUInt16LE(width, 0);
-  descriptor.writeUInt16LE(height, 2);
-  descriptor[4] = 0xf7; // global color table, 8 bits, 256 entries
-  descriptor[5] = 0;
-  descriptor[6] = 0;
-  push(descriptor);
-  for (const entry of palette) {
-    push(Buffer.from([entry[0], entry[1], entry[2]]));
-  }
-  // NETSCAPE2.0 application extension: loop forever (count 0).
-  // Without it, browsers/GDI+ play the sequence once and freeze on the last frame.
-  push(Buffer.from([0x21, 0xff, 0x0b, 0x4e, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45, 0x32, 0x2e, 0x30, 0x03, 0x01, 0x00, 0x00, 0x00]));
-
+  let palette = null;
+  let started = false;
   const delay = Math.max(1, Math.round(100 / fps));
-  for (let f = 0; f < frames.length; f++) {
-    const indices = quantize(frames[f], width, height, palette);
-    // packed: 0x09 = disposal=2 (restore to background) | transparent-color-flag.
-  // disposal=2 + transparent index 0 is the standard choice for full-canvas
-  // transparent animations (same as ffmpeg/Pillow output); verified in Chrome
-  // 151 (ImageDecoder + <img> playback), GDI+ and ffmpeg.
-  const gce = Buffer.from([0x21, 0xf9, 0x04, 0x09, delay & 0xff, delay >> 8, 0x00, 0x00]);
-    push(gce);
-    const image = Buffer.alloc(10);
-    image[0] = 0x2c;
-    image.writeUInt16LE(0, 1);
-    image.writeUInt16LE(0, 3);
-    image.writeUInt16LE(width, 5);
-    image.writeUInt16LE(height, 7);
-    image[9] = 0x00; // no local color table
-    push(image);
-    const minCodeSize = 8;
-    push(Buffer.from([minCodeSize]));
-    const compressed = lzwEncode(indices, minCodeSize);
-    for (let i = 0; i < compressed.length; i += 255) {
-      const block = compressed.slice(i, i + 255);
-      push(Buffer.from([block.length, ...block]));
-    }
-    push(Buffer.from([0x00]));
+
+  function start(firstFrame) {
+    palette = medianCut(firstFrame, width, height, maxColors);
+    push(Buffer.from('GIF89a'));
+    const descriptor = Buffer.alloc(7);
+    descriptor.writeUInt16LE(width, 0);
+    descriptor.writeUInt16LE(height, 2);
+    descriptor[4] = 0xf7; // global color table, 8 bits, 256 entries
+    descriptor[5] = 0;
+    descriptor[6] = 0;
+    push(descriptor);
+    for (const entry of palette) push(Buffer.from([entry[0], entry[1], entry[2]]));
+    // NETSCAPE2.0 application extension: loop forever (count 0).
+    // Without it, browsers/GDI+ play the sequence once and freeze on the last frame.
+    push(Buffer.from([0x21, 0xff, 0x0b, 0x4e, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45, 0x32, 0x2e, 0x30, 0x03, 0x01, 0x00, 0x00, 0x00]));
   }
-  push(Buffer.from([0x3b]));
-  return Buffer.concat(chunks);
+
+  return {
+    write(frame) {
+      if (!frame) throw new Error('createGifEncoder.write: frame required');
+      if (!started) { start(frame); started = true; }
+      const indices = quantize(frame, width, height, palette);
+      // packed: 0x09 = disposal=2 (restore to background) | transparent-color-flag.
+      // disposal=2 + transparent index 0 is the standard choice for full-canvas
+      // transparent animations (same as ffmpeg/Pillow output); verified in Chrome
+      // 151 (ImageDecoder + <img> playback), GDI+ and ffmpeg.
+      const gce = Buffer.from([0x21, 0xf9, 0x04, 0x09, delay & 0xff, delay >> 8, 0x00, 0x00]);
+      push(gce);
+      const image = Buffer.alloc(10);
+      image[0] = 0x2c;
+      image.writeUInt16LE(0, 1);
+      image.writeUInt16LE(0, 3);
+      image.writeUInt16LE(width, 5);
+      image.writeUInt16LE(height, 7);
+      image[9] = 0x00; // no local color table
+      push(image);
+      const minCodeSize = 8;
+      push(Buffer.from([minCodeSize]));
+      const compressed = lzwEncode(indices, minCodeSize);
+      for (let i = 0; i < compressed.length; i += 255) {
+        const block = compressed.slice(i, i + 255);
+        push(Buffer.from([block.length, ...block]));
+      }
+      push(Buffer.from([0x00]));
+    },
+    finish() {
+      if (!started) throw new Error('createGifEncoder.finish: no frames written');
+      push(Buffer.from([0x3b]));
+      return Buffer.concat(chunks);
+    },
+  };
+}
+
+export function encodeGif(frames, width, height, opts = {}) {
+  if (!frames || frames.length === 0) throw new Error('encodeGif: no frames');
+  const enc = createGifEncoder(width, height, opts);
+  for (const f of frames) enc.write(f);
+  return enc.finish();
 }
