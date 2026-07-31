@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { main } from '../src/pipeline.mjs';
 import { parseSkeleton } from '../src/skel.mjs';
-import { resolveModelRef, fetchCharacterFromPrts, enemyIndex } from '../src/prts.mjs';
+import { resolveModelRef, fetchCharacterFromPrts, fetchAllViewsFromPrts, enemyIndex } from '../src/prts.mjs';
 import { alignAssetsInPlace } from '../src/align.mjs';
 import { PerfMonitor } from '../src/perf.mjs';
 
@@ -567,27 +567,47 @@ async function handleApi(req, res, url) {
   if (req.method === 'POST' && pathname === '/api/fetch') {
     const body = await readBody(req);
     const jobId = enqueue('fetch', async () => {
-      const result = await fetchCharacterFromPrts({
-        character: body.character,
-        enemy: body.enemy,
-        key: body.key,
-        skin: body.skin,
-        view: body.view,
-        outDir: assetsDir,
-        force: !!body.force,
-        onLog: (m) => console.log(m),
+      const result = body.allViews
+        ? await fetchAllViewsFromPrts({
+            character: body.character,
+            enemy: body.enemy,
+            key: body.key,
+            skin: body.skin,
+            outDir: assetsDir,
+            force: !!body.force,
+            onLog: (m) => console.log(m),
+          })
+        : await fetchCharacterFromPrts({
+            character: body.character,
+            enemy: body.enemy,
+            key: body.key,
+            skin: body.skin,
+            view: body.view,
+            outDir: assetsDir,
+            force: !!body.force,
+            onLog: (m) => console.log(m),
+          });
+      const views = (result.views || [result]).map((v) => {
+        let animations = [];
+        try { animations = parseSkeleton(new Uint8Array(fs.readFileSync(v.skel))).animations.map((a) => ({ name: a.name, duration: a.duration })); } catch { animations = []; }
+        return {
+          view: v.view || result.view,
+          base: String(v.skel || '').replace(/\.skel$/i, '').split(/[\\/]/).pop(),
+          animations,
+          files: { skel: v.skel, atlas: v.atlas, png: v.png },
+        };
       });
-      let animations = [];
-      try { animations = parseSkeleton(new Uint8Array(fs.readFileSync(result.skel))).animations.map((a) => ({ name: a.name, duration: a.duration })); } catch { animations = []; }
       return {
         charId: result.charId,
         characterName: result.characterName,
         kind: result.kind,
         skin: result.skin,
         view: result.view,
+        allViews: !!body.allViews,
         dir: result.dir,
-        animations,
-        files: { skel: result.skel, atlas: result.atlas, png: result.png },
+        views,
+        animations: views[0]?.animations || [],
+        files: views[0]?.files || { skel: result.skel, atlas: result.atlas, png: result.png },
       };
     });
     sendJson(res, 202, { ok: true, jobId });
@@ -653,6 +673,11 @@ async function handleApi(req, res, url) {
       fs.writeFileSync(tlFile, JSON.stringify(t, null, 2));
       argv.push('--timeline', tlFile);
     }
+    if (body.assetsList && Array.isArray(body.assetsList) && body.assetsList.length) {
+      const listFile = `${outBase}.assets-list.json`;
+      fs.writeFileSync(listFile, JSON.stringify(body.assetsList.map((a) => ({ name: String(a.name || 'default'), skel: String(a.skel || ''), atlas: String(a.atlas || ''), png: String(a.png || '') })), null, 2));
+      argv.push('--assets-list', listFile);
+    }
     if (body.fps) argv.push('--fps', String(body.fps));
     if (body.size) argv.push('--size', String(body.size));
     if (body.format) argv.push('--format', String(body.format));
@@ -679,24 +704,31 @@ async function handleApi(req, res, url) {
   }
   if (req.method === 'POST' && pathname === '/api/previews') {
     const body = await readBody(req);
-    const skel = String(body.skel || '');
-    const atlas = String(body.atlas || '');
-    const png = String(body.png || '');
-    if (!skel || !atlas || !png || !fs.existsSync(skel) || !fs.existsSync(atlas) || !fs.existsSync(png)) {
-      return sendJson(res, 400, { ok: false, error: '模型三件套不完整，请先拉取模型' });
+    const views = Array.isArray(body.views) && body.views.length
+      ? body.views.map((v) => ({ view: String(v.view || ''), skel: String(v.skel || ''), atlas: String(v.atlas || ''), png: String(v.png || '') }))
+      : [{ view: String(body.view || ''), skel: String(body.skel || ''), atlas: String(body.atlas || ''), png: String(body.png || '') }];
+    for (const v of views) {
+      if (!v.skel || !v.atlas || !v.png || !fs.existsSync(v.skel) || !fs.existsSync(v.atlas) || !fs.existsSync(v.png)) {
+        return sendJson(res, 400, { ok: false, error: '模型三件套不完整，请先拉取模型' });
+      }
     }
     const jobId = enqueue('preview', async () => {
       const { renderActionPreviews } = await import('../src/preview.mjs');
       const tag = safeName(body.outName || 'model') + '-' + Date.now();
       const pvDir = path.join(outDir, '.previews', tag);
-      const items = await renderActionPreviews({
-        rootDir: root,
-        assets: { skel, atlas, png },
-        outDir: pvDir,
-        mode: body.mode === 'frame' ? 'frame' : 'anim',
-        chromePath: chromeCandidates(),
-        onLog: (m) => console.log(m),
-      });
+      const itemsAll = [];
+      for (const v of views) {
+        const vDir = path.join(pvDir, safeName(v.view || 'default'));
+        const items = await renderActionPreviews({
+          rootDir: root,
+          assets: { skel: v.skel, atlas: v.atlas, png: v.png },
+          outDir: vDir,
+          mode: body.mode === 'frame' ? 'frame' : 'anim',
+          chromePath: chromeCandidates(),
+          onLog: (m) => console.log(m),
+        });
+        for (const it of items) itemsAll.push({ ...it, view: v.view || '' });
+      }
       // 读取本地动作字典（若有），供 UI 预填标注
       let labels = {};
       if (body.modelId) {
@@ -712,11 +744,12 @@ async function handleApi(req, res, url) {
         tag,
         outDir: pvDir,
         labels,
-        files: items.map((it) => ({
+        files: itemsAll.map((it) => ({
           name: it.name,
           duration: it.duration,
           kind: it.kind,
-          url: '/outputs/.previews/' + tag + '/' + encodeURIComponent(path.basename(it.file)),
+          view: it.view || '',
+          url: '/outputs/.previews/' + tag + '/' + safeName(it.view || 'default') + '/' + encodeURIComponent(path.basename(it.file)),
         })),
       };
     });

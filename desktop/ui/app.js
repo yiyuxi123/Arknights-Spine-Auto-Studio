@@ -11,7 +11,8 @@ const state = {
   current: null,          // 当前选中模型 {id, dir, animations, files, name, source}
   resolve: null,          // 解析结果 {charId, kind, name, skins}
   assetSet: null,         // 高清化资源 {modelId, skel, atlas, png, label}
-  previews: null,         // 动作预览 [{name, duration, url}]
+  previews: null,         // 动作预览 [{name, duration, url, view}]
+  fetchViews: null,       // 拉取时下载的视图列表 [{view, base, files, animations}]
   pvDesc: {},             // 动作名 -> 用户描述
   queue: [],              // 时间轴 [{action, loop, duration, timeScale, description}]
   lastTimeline: null,
@@ -21,7 +22,7 @@ const state = {
   outDir: '',
   assetsDir: '',
   modelFilter: { kind: 'all', class: '', rarity: '', faction: '' },
-  perf: { cpu: [], mem: [] },
+  perf: { cpu: [], mem: [], gpu: [] },
 };
 
 const TPL = [
@@ -182,8 +183,16 @@ function renderPerf(s) {
     setTxt('#perf-sys-cpu', s.sys.cpuPct.toFixed(1) + '%');
     setTxt('#perf-sys-mem', s.sys.memPct.toFixed(1) + '% · ' + Math.round(s.sys.memUsedMB / 1024) + '/' + Math.round(s.sys.memTotalMB / 1024) + ' GB');
   }
+  if (s.gpu) {
+    setTxt('#perf-gpu-util', s.gpu.utilPct.toFixed(0) + '%');
+    setTxt('#perf-gpu-mem', s.gpu.memUsedMB + ' / ' + s.gpu.memTotalMB + ' MB');
+    setTxt('#perf-gpu-temp', s.gpu.tempC + '°C');
+    setTxt('#perf-gpu-power', s.gpu.powerW.toFixed(0) + ' W');
+    setTxt('#perf-gpu-name', s.gpu.name || '');
+  }
   drawPerfChart($('#perf-cpu-chart'), state.perf.cpu, { max: Math.max(100, ...state.perf.cpu, 1) * 1.1, color: '#5cb3ff', unit: '%' });
   drawPerfChart($('#perf-mem-chart'), state.perf.mem, { max: Math.max(512, ...state.perf.mem, 1) * 1.15, color: '#4ade9a', unit: 'MB' });
+  drawPerfChart($('#perf-gpu-chart'), state.perf.gpu, { max: Math.max(100, ...state.perf.gpu, 1) * 1.1, color: '#f472b6', unit: '%' });
   const box = $('#perf-procs');
   if (box) {
     const rows = (s.procs || []).map((p) =>
@@ -205,7 +214,8 @@ async function refreshPerf() {
     if (chip) chip.textContent = '⚡ CPU ' + s.app.cpuPct.toFixed(0) + '% · ' + s.app.memMB + 'MB';
     state.perf.cpu.push(s.app.cpuPct);
     state.perf.mem.push(s.app.memMB);
-    if (state.perf.cpu.length > 60) { state.perf.cpu.shift(); state.perf.mem.shift(); }
+    if (s.gpu) state.perf.gpu.push(s.gpu.utilPct);
+    if (state.perf.cpu.length > 60) { state.perf.cpu.shift(); state.perf.mem.shift(); state.perf.gpu.shift(); }
     if (!$('#perf-overlay').hidden) renderPerf(s);
   } catch { /* 忽略 */ }
 }
@@ -504,21 +514,24 @@ async function fetchModel(force) {
   btn.disabled = true;
   btn.textContent = force ? '强制重下中…' : '拉取中…';
   try {
+    const allViews = $('#f-allviews') ? $('#f-allviews').checked : false;
     const { jobId } = await api('/api/fetch', {
       character: r.kind === 'char' ? r.charId : undefined,
       enemy: r.kind === 'enemy' ? r.charId : undefined,
       key: r.charId,
       skin: $('#f-skin').value,
       view: $('#f-view').value,
+      allViews,
       force,
     });
     const result = await waitJob(jobId);
     await refreshState();
+    state.fetchViews = Array.isArray(result.views) ? result.views : null;
     const skelBase = String(result.files?.skel || '').split(/[\\/]/).pop().replace(/\.skel$/, '');
     const m = state.models.find((x) => x.id === result.charId + '|' + skelBase) || state.models.find((x) => x.groupId === result.charId);
     selectModel(m || { id: result.charId + '|' + skelBase, groupId: result.charId, name: result.characterName, displayName: result.characterName, skinLabel: result.skin || '默认', viewLabel: result.view || '', base: skelBase, kind: result.kind, source: result.kind === 'enemy' ? 'prts-enemy' : 'prts', dir: result.dir, animations: result.animations, files: result.files });
     $('#fetch-done').hidden = false;
-    $('#resolve-out').textContent = '✅ 三件套就绪：' + (result.files?.skel || '');
+    $('#resolve-out').textContent = '✅ ' + (result.allViews ? '已下载 ' + (state.fetchViews?.length || 0) + ' 个视图（战斗 / 基建 / 正面 / 背面），可在预览与时间轴中拼贴动作' : '三件套就绪：' + (result.files?.skel || ''));
   } catch (err) {
     alert('拉取失败：' + err.message);
   } finally {
@@ -545,8 +558,9 @@ function animStat(m) {
   return list.length ? list.length + ' 个动作 · ' + total.toFixed(1) + 's' : '无动画信息';
 }
 function rarityStars(r) {
-  const n = parseInt(r, 10) || 0;
-  if (n < 1 || n > 6) return '';
+  const raw = parseInt(r, 10) || 0;
+  if (raw < 1 || raw > 5) return '';
+  const n = raw + 1;
   return '<span class="stars" title="' + n + '星">' + '★'.repeat(n) + '☆'.repeat(6 - n) + '</span>';
 }
 // art 路径转 /assets/ URL
@@ -582,6 +596,22 @@ function groupModels(filter) {
 }
 function kindOf(m) {
   return m.kind === 'enemy' ? 'enemy' : m.kind === 'build' ? 'build' : 'char';
+}
+function collectModelViews(m) {
+  if (!m) return [];
+  const seen = new Set();
+  const out = [];
+  for (const x of state.models) {
+    if (x.groupId !== m.groupId) continue;
+    const key = x.base || x.viewLabel || '';
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (x.files && x.files.skel && x.files.atlas && x.files.png) {
+      out.push({ view: x.viewLabel || x.base || '', files: x.files, animations: x.animations || [] });
+    }
+  }
+  if (!out.length && m.files) out.push({ view: m.viewLabel || '', files: m.files, animations: m.animations || [] });
+  return out;
 }
 function renderDirFilters() {
   const kinds = [
@@ -623,7 +653,7 @@ function renderDirFilters() {
     if (m.rarity) rar.set(String(m.rarity), (rar.get(String(m.rarity)) || 0) + 1);
   }
   opts($('#f-class'), [...cls.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ key: k, label: k + ' (' + n + ')' })), '职业全部');
-  opts($('#f-rarity'), [...rar.entries()].sort((a, b) => b[0] - a[0]).map(([k, n]) => ({ key: k, label: '★'.repeat(parseInt(k, 10)) + ' (' + n + ')' })), '稀有度全部');
+  opts($('#f-rarity'), [...rar.entries()].sort((a, b) => b[0] - a[0]).map(([k, n]) => ({ key: k, label: (parseInt(k, 10) > 0 ? '★'.repeat(parseInt(k, 10) + 1) : '无') + ' (' + n + ')' })), '稀有度全部');
   opts($('#f-faction'), [...fac.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ key: k, label: k + ' (' + n + ')' })), '阵营全部');
 }
 function bindFilterSelects() {
@@ -843,7 +873,11 @@ $('#btn-preview').addEventListener('click', async () => {
   const mode = document.querySelector('input[name=pv-mode]:checked')?.value || 'anim';
   $('#pv-info').textContent = '⏳ 正在' + (mode === 'anim' ? '渲染完整动画预览' : '截取单帧快照') + '（' + (m.animations || []).length + ' 个动作，使用原始资源）…';
   try {
-    const { jobId } = await api('/api/previews', { skel: assets.skel, atlas: assets.atlas, png: assets.png, outName: m.name, mode, modelId: m.id });
+    const mv = collectModelViews(m);
+    const pvBody = mv.length > 1
+      ? { views: mv.map((v) => ({ view: v.view, skel: v.files.skel, atlas: v.files.atlas, png: v.files.png })), outName: m.name, mode, modelId: m.id }
+      : { skel: assets.skel, atlas: assets.atlas, png: assets.png, view: mv[0]?.view || '', outName: m.name, mode, modelId: m.id };
+    const { jobId } = await api('/api/previews', pvBody);
     state.activeJob = jobId;
     const result = await waitJob(jobId);
     state.previews = result.files;
@@ -900,10 +934,23 @@ function renderPvGrid() {
   const files = state.previews || [];
   if (!files.length) { box.innerHTML = '<div class="muted">还没有预览，点上方「生成动作预览」。</div>'; return; }
   box.innerHTML = '';
-  const inQueue = new Set(state.queue.map((s) => s.action));
+  const inQueue = new Set(state.queue.map((s) => s.action + '\u0000' + (s.view || '')));
+  const groups = new Map();
   for (const p of files) {
+    const v = p.view || '';
+    if (!groups.has(v)) groups.set(v, []);
+    groups.get(v).push(p);
+  }
+  for (const [view, list] of groups) {
+    if (groups.size > 1) {
+      const head = document.createElement('div');
+      head.className = 'pv-group-head';
+      head.innerHTML = '<b>' + escapeHtml(view || 'default') + '</b><span class="muted">' + list.length + ' \u4e2a\u52a8\u4f5c</span>';
+      box.appendChild(head);
+    }
+    for (const p of list) {
     const card = document.createElement('div');
-    card.className = 'pv-card' + (inQueue.has(p.name) ? ' used' : '');
+    card.className = 'pv-card' + (inQueue.has(p.name + '\u0000' + (p.view || '')) ? ' used' : '');
     const desc = state.pvDesc[p.name] || '';
     const isGif = p.kind === 'gif';
     card.innerHTML =
@@ -922,26 +969,29 @@ function renderPvGrid() {
       if (seg) { seg.description = descInput.value; renderQueue(); }
     });
     card.querySelector('.pv-add').addEventListener('click', () => {
-      queueAdd(p.name, p.duration, descInput.value);
+      queueAdd(p.name, p.duration, descInput.value, p.view || '');
       card.classList.add('used');
     });
     box.appendChild(card);
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
 // ③ 编排时间轴：队列 + PR 式可视化
 // ---------------------------------------------------------------------------
-function queueAdd(action, duration, description) {
-  const existing = state.queue.find((s) => s.action === action);
+function queueAdd(action, duration, description, view) {
+  const existing = state.queue.find((s) => s.action === action && (s.view || '') === (view || ''));
   if (existing) { queueRemove(state.queue.indexOf(existing)); return; }
   const d = duration && duration > 0 ? Math.min(Math.max(duration, 0.5), 10) : 2;
-  state.queue.push({ action, loop: d >= 2, duration: d, timeScale: 1, description: description || '' });
+  state.queue.push({ action, view: view || '', loop: d >= 2, duration: d, timeScale: 1, description: description || '' });
   renderQueue();
+  if (typeof renderPvGrid === 'function') renderPvGrid();
 }
 function queueRemove(i) {
   state.queue.splice(i, 1);
   renderQueue();
+  if (typeof renderPvGrid === 'function') renderPvGrid();
 }
 function queueMove(i, dir) {
   const j = i + dir;
@@ -949,6 +999,7 @@ function queueMove(i, dir) {
   const [seg] = state.queue.splice(i, 1);
   state.queue.splice(j, 0, seg);
   renderQueue();
+  if (typeof renderPvGrid === 'function') renderPvGrid();
 }
 
 function renderQueue() {
@@ -977,6 +1028,7 @@ function renderQueue() {
     bar.appendChild(blk);
   });
   box.innerHTML = '';
+  const tlViews = collectModelViews(state.current);
   q.forEach((seg, i) => {
     const row = document.createElement('div');
     row.className = 'tl-row';
@@ -986,6 +1038,7 @@ function renderQueue() {
       <label>时长 <input type="number" min="0.1" step="0.1" value="${parseFloat(seg.duration) || 0}" class="tl-dur"></label>
       <label class="checkbox">循环 <input type="checkbox" ${seg.loop ? 'checked' : ''} class="tl-loop"></label>
       <label>倍速 <input type="number" min="0.1" step="0.1" value="${parseFloat(seg.timeScale) || 1}" class="tl-scale"></label>
+      ${tlViews.length > 1 ? '<label>视图 <select class="tl-view">' + tlViews.map((v) => '<option value="' + escapeHtml(v.view || 'default') + '"' + ((seg.view || '') === (v.view || '') ? ' selected' : '') + '>' + escapeHtml(v.view || 'default') + '</option>').join('') + '</select></label>' : ''}
       <input type="text" class="grow tl-desc" placeholder="含义（可选）" value="${escapeHtml(seg.description || '')}">
       <span class="tl-ops">
         <button class="ghost" data-op="up" title="上移">↑</button>
@@ -996,6 +1049,8 @@ function renderQueue() {
       seg.duration = Math.max(0.1, parseFloat(row.querySelector('.tl-dur').value) || seg.duration);
       seg.loop = row.querySelector('.tl-loop').checked;
       seg.timeScale = Math.max(0.1, parseFloat(row.querySelector('.tl-scale').value) || seg.timeScale);
+      const vs = row.querySelector('.tl-view');
+      if (vs) seg.view = vs.value;
       seg.description = row.querySelector('.tl-desc').value;
       if (seg.description && state.pvDesc[seg.action] !== seg.description) state.pvDesc[seg.action] = seg.description;
       renderQueue();
@@ -1113,10 +1168,18 @@ $('#btn-run').addEventListener('click', async () => {
   state.lastTimeline = {
     character: state.current?.name || 'result',
     fps: parseInt($('#g-fps').value, 10) || 30,
-    timeline: state.queue.map((s) => ({ action: s.action, loop: !!s.loop, duration: Number(s.duration) || 2, timeScale: Number(s.timeScale) || 1, description: s.description || '' })),
+    timeline: state.queue.map((s) => ({ action: s.action, view: s.view || '', loop: !!s.loop, duration: Number(s.duration) || 2, timeScale: Number(s.timeScale) || 1, description: s.description || '' })),
     mode: 'edited',
   };
   body.timeline = state.lastTimeline;
+  const mvAll = collectModelViews(state.current);
+  if (mvAll.length > 1) {
+    const hi = state.assetSet && state.assetSet.modelId === state.current.id ? state.assetSet : null;
+    body.assetsList = mvAll.map((v) => {
+      const use = hi && hi.skel === v.files.skel ? hi : v.files;
+      return { name: v.view || 'default', skel: use.skel, atlas: use.atlas, png: use.png };
+    });
+  }
   state.lastModelParams = body;
   startJobUI();
   try {

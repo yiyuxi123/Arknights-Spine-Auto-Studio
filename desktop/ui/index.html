@@ -59,6 +59,7 @@
       <div id="skin-row" class="row wrap" hidden>
         <select id="f-skin" class="grow"></select>
         <select id="f-view" class="grow"></select>
+        <label class="checkbox" title="同一皮肤下把战斗 / 基建 / 正面 / 背面等视图的三件套全部下载，方便动作拼贴"><input id="f-allviews" type="checkbox" checked>全部视图</label>
         <button id="btn-fetch" class="primary">拉取三件套</button>
         <button id="btn-fetch-force" class="ghost" title="强制重新下载">强制重下</button>
       </div>
@@ -254,8 +255,20 @@
         </div>
     </div>
     <div class="card" style="margin-top:14px">
-      <h4>???????CPU / ???</h4>
+      <h4>软件进程明细（CPU / 内存）</h4>
       <div id="perf-procs" class="perf-procs"></div>
+    </div>
+    <div class="card" style="grid-column:1 / -1">
+      <h4>GPU（NVIDIA）</h4>
+      <div class="perf-nums">
+        <div class="perf-num"><b id="perf-gpu-util">--</b><span>占用</span></div>
+        <div class="perf-num"><b id="perf-gpu-mem">--</b><span>显存</span></div>
+        <div class="perf-num"><b id="perf-gpu-temp">--</b><span>温度</span></div>
+        <div class="perf-num"><b id="perf-gpu-power">--</b><span>功耗</span></div>
+      </div>
+      <canvas id="perf-gpu-chart" class="perf-chart"></canvas>
+      <div class="perf-chart-label">GPU 占用趋势（%）</div>
+      <div id="perf-gpu-name" class="muted" style="font-size:11px"></div>
     </div>
   </div>
 </div>

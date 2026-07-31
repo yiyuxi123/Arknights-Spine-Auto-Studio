@@ -245,13 +245,34 @@ async function cmdRun(args) {
   const format = String(args.format || 'gif').toLowerCase();
 
   const assets = await resolveAssets(args);
+  let assetsList = null;
+  if (args['assets-list']) {
+    const raw = JSON.parse(fs.readFileSync(path.resolve(args['assets-list']), 'utf8'));
+    assetsList = raw.map((a) => ({
+      name: a.name || 'default',
+      skel: path.resolve(a.skel),
+      atlas: path.resolve(a.atlas),
+      png: path.resolve(a.png),
+    }));
+    for (const a of assetsList) {
+      for (const k of ['skel', 'atlas', 'png']) {
+        if (!fs.existsSync(a[k])) throw new Error('视图 ' + a.name + ' 缺少文件: ' + a[k]);
+      }
+    }
+  }
   // 对齐 atlas 声明尺寸与实际 PNG 尺寸（PRTS 贴图可能被降采样，不修复会渲染散架）
   {
     const { alignAssetsInPlace } = await import('./align.mjs');
-    try { alignAssetsInPlace({ atlasPath: assets.atlas, pngPath: assets.png, onLog: (m) => console.log(m) }); } catch (e) { console.log('[align] 跳过对齐: ' + e.message); }
+    const targets = assetsList || [{ atlas: assets.atlas, png: assets.png }];
+    for (const t of targets) {
+      try { alignAssetsInPlace({ atlasPath: t.atlas, pngPath: t.png, onLog: (m) => console.log(m) }); } catch (e) { console.log('[align] 跳过对齐: ' + e.message); }
+    }
   }
+  const animationsByView = assetsList
+    ? Object.fromEntries(assetsList.map((a) => [a.name, parseSkeleton(new Uint8Array(fs.readFileSync(a.skel))).animations.map((x) => ({ name: x.name, duration: x.duration }))]))
+    : null;
   const skeleton = parseSkeleton(new Uint8Array(fs.readFileSync(assets.skel)));
-  const animations = skeleton.animations.map((a) => ({ name: a.name, duration: a.duration }));
+  const animations = animationsByView ? Object.values(animationsByView).flat() : skeleton.animations.map((a) => ({ name: a.name, duration: a.duration }));
 
   const apiKey = process.env.DEEPSEEK_API_KEY;
   const useMock = !!args.mock || !apiKey;
@@ -269,7 +290,7 @@ async function cmdRun(args) {
       fps: saved.fps ?? fps,
       timeline: saved.timeline,
       mode: 'edited',
-    }, animations);
+    }, animations, animationsByView);
     console.log('[choreograph] mode=edited 使用时间轴 ' + path.resolve(args.timeline));
   } else {
     plan = await choreograph({
@@ -300,30 +321,51 @@ async function cmdRun(args) {
 
   // ---- 高清化：同步放大 atlas 与 PNG（可选 AI 超分） ----
   let renderAssets = assets;
+  let renderAssetsList = assetsList;
   const upscale = Math.min(8, Math.max(1, parseInt(args.upscale || '1', 10) || 1));
   const wantSr = !!args.sr || !!args['sr-engine'];
   if (upscale > 1 || wantSr) {
     const targetScale = upscale > 1 ? upscale : 4; // 仅 --sr 时默认按引擎原生 4x
-    const hiDir = path.join(outDir, path.basename(stem) + '-hi');
     let srHandle = null;
     if (wantSr) {
       const { resolveEngine } = await import('./sr.mjs');
       const spec = args['sr-engine'] || (typeof args.sr === 'string' ? args.sr : null);
       srHandle = await resolveEngine(spec, { onLog: (m) => console.log(m) });
     }
-    const prepared = await prepareUpscaledAssets({
-      atlasPath: assets.atlas,
-      pngPath: assets.png,
-      scale: targetScale,
-      outDir: hiDir,
-      sr: srHandle,
-      srScale: parseInt(args['sr-scale'] || '0', 10) || 0,
-      srGpu: parseInt(args['sr-gpu'] || '0', 10) || 0,
-      srTile: parseInt(args['sr-tile'] || '0', 10) || 0,
-      onLog: (m) => console.log(m),
-    });
-    console.log(`[hi-res] 高清化 x${targetScale}：atlas + PNG -> ${hiDir}`);
-    renderAssets = { skel: assets.skel, atlas: prepared.atlas, png: prepared.png };
+    if (renderAssetsList) {
+      renderAssetsList = [];
+      for (const a of assetsList) {
+        const hiDir = path.join(outDir, path.basename(stem) + '-hi-' + a.name);
+        const prepared = await prepareUpscaledAssets({
+          atlasPath: a.atlas,
+          pngPath: a.png,
+          scale: targetScale,
+          outDir: hiDir,
+          sr: srHandle,
+          srScale: parseInt(args['sr-scale'] || '0', 10) || 0,
+          srGpu: parseInt(args['sr-gpu'] || '0', 10) || 0,
+          srTile: parseInt(args['sr-tile'] || '0', 10) || 0,
+          onLog: (m) => console.log(m),
+        });
+        console.log(`[hi-res] 视图 ${a.name} 高清化 x${targetScale}： -> ${hiDir}`);
+        renderAssetsList.push({ name: a.name, skel: a.skel, atlas: prepared.atlas, png: prepared.png });
+      }
+    } else {
+      const hiDir = path.join(outDir, path.basename(stem) + '-hi');
+      const prepared = await prepareUpscaledAssets({
+        atlasPath: assets.atlas,
+        pngPath: assets.png,
+        scale: targetScale,
+        outDir: hiDir,
+        sr: srHandle,
+        srScale: parseInt(args['sr-scale'] || '0', 10) || 0,
+        srGpu: parseInt(args['sr-gpu'] || '0', 10) || 0,
+        srTile: parseInt(args['sr-tile'] || '0', 10) || 0,
+        onLog: (m) => console.log(m),
+      });
+      console.log(`[hi-res] 高清化 x${targetScale}：atlas + PNG -> ${hiDir}`);
+      renderAssets = { skel: assets.skel, atlas: prepared.atlas, png: prepared.png };
+    }
   }
 
   const relAsset = (p) => path.relative(root, p).replace(/\\/g, '/');
@@ -337,6 +379,7 @@ async function cmdRun(args) {
     const result = await renderTimelineToGif({
       rootDir: root,
       assets: { skel: relAsset(renderAssets.skel), atlas: relAsset(renderAssets.atlas), png: relAsset(renderAssets.png) },
+      assetsList: renderAssetsList ? renderAssetsList.map((a) => ({ name: a.name, skel: relAsset(a.skel), atlas: relAsset(a.atlas), png: relAsset(a.png) })) : undefined,
       timeline: plan,
       outFile: gifFile,
       width,
@@ -357,6 +400,7 @@ async function cmdRun(args) {
     const frames = await renderFramesToPng({
       rootDir: root,
       assets: { skel: relAsset(renderAssets.skel), atlas: relAsset(renderAssets.atlas), png: relAsset(renderAssets.png) },
+      assetsList: renderAssetsList ? renderAssetsList.map((a) => ({ name: a.name, skel: relAsset(a.skel), atlas: relAsset(a.atlas), png: relAsset(a.png) })) : undefined,
       timeline: plan,
       width,
       height,
@@ -411,7 +455,7 @@ async function cmdRun(args) {
 // PNG frame export path (same browser pipeline, returns RGBA frames instead of GIF)
 import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession } from './cdp.mjs';
 import { decodePng } from './png.mjs';
-async function renderFramesToPng({ rootDir, assets, timeline, width, height, fps, background = '00000000', mix = 0.2, chromePath, onFrame }) {
+async function renderFramesToPng({ rootDir, assets, assetsList, timeline, width, height, fps, background = '00000000', mix = 0.2, chromePath, onFrame }) {
   const server = await startStaticServer(rootDir);
   const userDataDir = fs.mkdtempSync(path.join(await import('node:os').then((m) => m.tmpdir()), 'spine-studio-'));
   const chrome = launchChrome({ chromePath, userDataDir, width, height });
@@ -419,7 +463,10 @@ async function renderFramesToPng({ rootDir, assets, timeline, width, height, fps
   try {
     await cdp.open();
     const rel = (p) => '/' + String(p).replace(/\\/g, '/').replace(/^\/?/, '');
-    const query = new URLSearchParams({ skel: rel(assets.skel), atlas: rel(assets.atlas), png: rel(assets.png), w: String(width), h: String(height), bg: background, mix: String(mix) });
+    const views = Array.isArray(assetsList) && assetsList.length
+      ? assetsList.map((a) => ({ name: a.name || 'default', skel: rel(a.skel), atlas: rel(a.atlas), png: rel(a.png) }))
+      : [{ name: 'default', skel: rel(assets.skel), atlas: rel(assets.atlas), png: rel(assets.png) }];
+    const query = new URLSearchParams({ skel: views[0].skel, atlas: views[0].atlas, png: views[0].png, views: JSON.stringify(views), w: String(width), h: String(height), bg: background, mix: String(mix) });
     const { sessionId } = await newPageSession(cdp, `${server.origin}/render/index.html?${query}`);
     const send = (m, p) => cdp.send(m, p, sessionId);
     const load = await evalJs(send, 'studio.load()');
@@ -436,7 +483,7 @@ async function renderFramesToPng({ rootDir, assets, timeline, width, height, fps
         segIndex++;
       }
       const seg = segments[segIndex];
-      await evalJs(send, `studio.step(${JSON.stringify({ action: seg.action, loop: seg.loop, delta: 1 / fps, timeScale: seg.timeScale || 1 })})`);
+      await evalJs(send, `studio.step(${JSON.stringify({ action: seg.action, view: seg.view || 'default', loop: seg.loop, delta: 1 / fps, timeScale: seg.timeScale || 1 })})`);
       const dataUrl = await evalJs(send, 'studio.snapshot()');
       const dec = decodePng(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'));
       out.push(dec.rgba);

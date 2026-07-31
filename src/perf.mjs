@@ -62,6 +62,27 @@ export class PerfMonitor {
     try { this.cached = await this.sample(); } catch { /* keep last */ } finally { this.busy = false; }
   }
 
+  async sampleGpu() {
+    try {
+      const res = await runPowershell('nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader,nounits');
+      if (res && res.out && res.out.trim()) {
+        const parts = res.out.trim().split(',').map((s) => s.trim());
+        if (parts.length >= 6) {
+          return {
+            vendor: 'nvidia',
+            name: parts[0],
+            utilPct: parseFloat(parts[1]) || 0,
+            memUsedMB: parseFloat(parts[2]) || 0,
+            memTotalMB: parseFloat(parts[3]) || 0,
+            tempC: parseFloat(parts[4]) || 0,
+            powerW: parseFloat(parts[5]) || 0,
+          };
+        }
+      }
+    } catch { /* no gpu tooling */ }
+    return null;
+  }
+
   async sample() {
     const now = Date.now();
     const sys = cpuTicks();
@@ -93,10 +114,12 @@ export class PerfMonitor {
     const sysIdleDelta = Math.max(0, sys.idle - prev.sys.idle);
     const sysTotalDelta = Math.max(0, sys.total - prev.sys.total);
     const sysCpuPct = sysTotalDelta > 0 ? Math.min(100, (1 - sysIdleDelta / sysTotalDelta) * 100) : 0;
+    const gpu = await this.sampleGpu();
     return {
       ok: true,
       ts: now,
       cores,
+      gpu,
       app: {
         cpuPct: +appCpuPct.toFixed(1),
         memMB: +(appMem / 1048576).toFixed(0),

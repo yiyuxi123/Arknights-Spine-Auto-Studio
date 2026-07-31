@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -25,8 +25,19 @@
     background: params.get('bg') || '00000000',
     premultipliedAlpha: (params.get('premult') || '1') !== '0',
     mix: parseFloat(params.get('mix') || '0.2'),
-    fit: parseFloat(params.get('fit') || '0.92')
+    fit: parseFloat(params.get('fit') || '0.92'),
+    views: null
   };
+  try {
+    var vs = params.get('views');
+    if (vs) {
+      var parsed = JSON.parse(vs);
+      if (Array.isArray(parsed) && parsed.length) cfg.views = parsed;
+    }
+  } catch (e) { cfg.views = null; }
+  if (!cfg.views) {
+    cfg.views = [{ name: 'default', skel: cfg.skel, atlas: cfg.atlas, png: cfg.png }];
+  }
   canvas.width = cfg.width;
   canvas.height = cfg.height;
 
@@ -37,8 +48,11 @@
   gl.viewport(0, 0, cfg.width, cfg.height);
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
 
-  var scene = null, skeleton = null, state = null, skeletonData = null;
-  var currentAction = null, currentTimeScale = 1, ready = false, loadError = null, boundsInfo = null;
+  var scene = null;
+  var views = [];           // [{key, skeletonData, skeleton, state, boundsInfo, animations}]
+  var currentView = null;
+  var ready = false, loadError = null;
+  var unionBounds = null;
 
   function hexBg(hex) {
     hex = String(hex).replace('#', '');
@@ -56,7 +70,7 @@
     return fetch(url).then(function (r) { if (!r.ok) throw new Error('fetch ' + url + ' -> ' + r.status); return r.text(); });
   }
 
-  function collectBounds() {
+  function collectBounds(skeleton) {
     var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     var verts = new Float32Array(1024);
     var drawOrder = skeleton.drawOrder;
@@ -83,7 +97,7 @@
     return { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
   }
 
-  function samplePoseAndCollectBounds() {
+  function samplePoseAndCollectBounds(v) {
     var union = null;
     function add(b) {
       if (!b || !isFinite(b.minX)) return;
@@ -95,34 +109,35 @@
         union.maxY = Math.max(union.maxY, b.maxY);
       }
     }
-    skeleton.setToSetupPose();
-    skeleton.updateWorldTransform();
-    add(collectBounds());
-    var anims = skeletonData.animations;
+    v.skeleton.setToSetupPose();
+    v.skeleton.updateWorldTransform();
+    add(collectBounds(v.skeleton));
+    var anims = v.skeletonData.animations;
     for (var i = 0; i < anims.length; i++) {
       var anim = anims[i];
       if (anim.duration <= 0) continue;
       var times = [0, anim.duration * 0.3, anim.duration * 0.6, anim.duration * 0.95];
       for (var t = 0; t < times.length; t++) {
-        skeleton.setToSetupPose();
-        state.setAnimation(0, anim.name, true);
-        state.update(Math.max(0.0001, times[t]));
-        state.apply(skeleton);
-        skeleton.updateWorldTransform();
-        add(collectBounds());
+        v.skeleton.setToSetupPose();
+        v.state.setAnimation(0, anim.name, true);
+        v.state.update(Math.max(0.0001, times[t]));
+        v.state.apply(v.skeleton);
+        v.skeleton.updateWorldTransform();
+        add(collectBounds(v.skeleton));
       }
     }
     return union || { minX: -100, minY: -100, maxX: 100, maxY: 100 };
   }
 
   function fitCamera() {
-    var bw = boundsInfo.maxX - boundsInfo.minX;
-    var bh = boundsInfo.maxY - boundsInfo.minY;
+    if (!unionBounds) return;
+    var bw = unionBounds.maxX - unionBounds.minX;
+    var bh = unionBounds.maxY - unionBounds.minY;
     if (bw <= 0 || bh <= 0) { bw = Math.max(bw, 1); bh = Math.max(bh, 1); }
     var scale = Math.min(cfg.width / bw, cfg.height / bh) * cfg.fit;
     scene.camera.zoom = 1 / scale;
-    scene.camera.position.x = boundsInfo.minX + bw / 2;
-    scene.camera.position.y = boundsInfo.minY + bh / 2;
+    scene.camera.position.x = unionBounds.minX + bw / 2;
+    scene.camera.position.y = unionBounds.minY + bh / 2;
     scene.camera.update();
   }
 
@@ -131,59 +146,82 @@
     gl.clearColor(bg.r, bg.g, bg.b, bg.a);
     gl.clear(gl.COLOR_BUFFER_BIT);
     scene.begin();
-    scene.drawSkeleton(skeleton, cfg.premultipliedAlpha);
+    if (currentView) scene.drawSkeleton(currentView.skeleton, cfg.premultipliedAlpha);
     scene.end();
+  }
+
+  function resolveView(name) {
+    if (!name) return views[0] || null;
+    for (var i = 0; i < views.length; i++) if (views[i].key === name) return views[i];
+    return views[0] || null;
+  }
+
+  async function loadOne(vw) {
+    var key = vw.name || 'default';
+    var skelBuf = await fetchBuf(vw.skel);
+    var atlasText = await fetchText(vw.atlas);
+    var pngSet = {};
+    atlasText.split(/\r?\n/).forEach(function (line) {
+      var m = line.match(/^([A-Za-z0-9_\-.\/]+\.png)\s*$/i);
+      if (m) pngSet[m[1]] = true;
+    });
+    var base = vw.png.slice(0, vw.png.lastIndexOf('/') + 1);
+    if (Object.keys(pngSet).length === 0) pngSet[vw.png.split('/').pop()] = true;
+    var bitmaps = {};
+    var pngNames = Object.keys(pngSet);
+    for (var i = 0; i < pngNames.length; i++) {
+      var url = base + pngNames[i];
+      var r = await fetch(url);
+      if (!r.ok) {
+        var r2 = await fetch(vw.png);
+        if (!r2.ok) throw new Error('fetch ' + url + ' -> ' + r.status);
+        bitmaps[pngNames[i]] = await createImageBitmap(await r2.blob());
+      } else {
+        bitmaps[pngNames[i]] = await createImageBitmap(await r.blob());
+      }
+    }
+    var atlas = new spine.TextureAtlas(atlasText, function (path) {
+      var bitmap = bitmaps[path];
+      if (!bitmap) throw new Error('no texture bitmap for ' + path);
+      var tex = new spine.webgl.GLTexture(context, bitmap);
+      tex.setFilters(spine.TextureFilter.Linear, spine.TextureFilter.Linear);
+      return tex;
+    });
+    var atlasLoader = new spine.AtlasAttachmentLoader(atlas);
+    var skeletonData = new spine.SkeletonBinary(atlasLoader).readSkeletonData(new Uint8Array(skelBuf));
+    var skeleton = new spine.Skeleton(skeletonData);
+    var stateData = new spine.AnimationStateData(skeletonData);
+    stateData.defaultMix = cfg.mix;
+    var state = new spine.AnimationState(stateData);
+    var v = { key: key, skeletonData: skeletonData, skeleton: skeleton, state: state, boundsInfo: null, animations: [] };
+    v.boundsInfo = samplePoseAndCollectBounds(v);
+    v.animations = skeletonData.animations.map(function (a) { return { name: a.name, duration: a.duration }; });
+    return v;
   }
 
   var studio = {
     config: cfg,
     async load() {
       try {
-        var skelBuf = await fetchBuf(cfg.skel);
-        var atlasText = await fetchText(cfg.atlas);
-        var pngSet = {};
-        atlasText.split(/\r?\n/).forEach(function (line) {
-          var m = line.match(/^([A-Za-z0-9_\-./]+\.png)\s*$/i);
-          if (m) pngSet[m[1]] = true;
-        });
-        var base = cfg.png.slice(0, cfg.png.lastIndexOf('/') + 1);
-        if (Object.keys(pngSet).length === 0) pngSet[cfg.png.split('/').pop()] = true;
-        var bitmaps = {};
-        var pngNames = Object.keys(pngSet);
-        for (var i = 0; i < pngNames.length; i++) {
-          var url = base + pngNames[i];
-          var r = await fetch(url);
-          if (!r.ok) {
-            var r2 = await fetch(cfg.png);
-            if (!r2.ok) throw new Error('fetch ' + url + ' -> ' + r.status);
-            bitmaps[pngNames[i]] = await createImageBitmap(await r2.blob());
-          } else {
-            bitmaps[pngNames[i]] = await createImageBitmap(await r.blob());
-          }
-        }
-        var atlas = new spine.TextureAtlas(atlasText, function (path) {
-          var bitmap = bitmaps[path];
-          if (!bitmap) throw new Error('no texture bitmap for ' + path);
-          var tex = new spine.webgl.GLTexture(context, bitmap);
-          tex.setFilters(spine.TextureFilter.Linear, spine.TextureFilter.Linear);
-          return tex;
-        });
-        var atlasLoader = new spine.AtlasAttachmentLoader(atlas);
-        skeletonData = new spine.SkeletonBinary(atlasLoader).readSkeletonData(new Uint8Array(skelBuf));
-        skeleton = new spine.Skeleton(skeletonData);
-        var stateData = new spine.AnimationStateData(skeletonData);
-        stateData.defaultMix = cfg.mix;
-        state = new spine.AnimationState(stateData);
         scene = new spine.webgl.SceneRenderer(canvas, context, true);
         scene.camera.setViewport(cfg.width, cfg.height);
-        boundsInfo = samplePoseAndCollectBounds();
+        views = [];
+        unionBounds = null;
+        for (var i = 0; i < cfg.views.length; i++) {
+          var v = await loadOne(cfg.views[i]);
+          views.push(v);
+          if (!unionBounds) unionBounds = v.boundsInfo;
+          else {
+            unionBounds.minX = Math.min(unionBounds.minX, v.boundsInfo.minX);
+            unionBounds.minY = Math.min(unionBounds.minY, v.boundsInfo.minY);
+            unionBounds.maxX = Math.max(unionBounds.maxX, v.boundsInfo.maxX);
+            unionBounds.maxY = Math.max(unionBounds.maxY, v.boundsInfo.maxY);
+          }
+        }
+        currentView = views[0] || null;
         fitCamera();
         ready = true;
-        return {
-          ok: true,
-          animations: skeletonData.animations.map(function (a) { return { name: a.name, duration: a.duration }; }),
-          bounds: boundsInfo
-        };
+        return { ok: true, views: views.map(function (v) { return { name: v.key, animations: v.animations }; }), bounds: unionBounds };
       } catch (err) {
         loadError = String(err && err.stack || err);
         return { ok: false, error: loadError };
@@ -195,27 +233,30 @@
       var loop = !!params.loop;
       var delta = typeof params.delta === 'number' ? params.delta : 1 / 30;
       var ts = typeof params.timeScale === 'number' && params.timeScale > 0 && isFinite(params.timeScale) ? params.timeScale : 1;
+      var target = resolveView(params.view);
+      if (!target) throw new Error('no skeleton loaded');
+      var switched = target !== currentView;
+      if (switched) { currentView = target; target.state.clearTracks(); }
       var requested = action;
-      if (action !== currentAction || ts !== currentTimeScale) {
-        if (!skeletonData.findAnimation(action)) {
-          action = skeletonData.animations.length ? skeletonData.animations[0].name : null;
+      if (action !== target._lastAction || ts !== target._lastScale || switched) {
+        if (!target.skeletonData.findAnimation(action)) {
+          action = target.skeletonData.animations.length ? target.skeletonData.animations[0].name : null;
           if (!action) throw new Error('skeleton has no animations');
         }
-        var entry = state.setAnimation(0, action, loop);
+        var entry = target.state.setAnimation(0, action, loop);
         entry.timeScale = ts;
-        currentAction = action;
-        currentTimeScale = ts;
+        target._lastAction = action;
+        target._lastScale = ts;
       }
-      state.update(delta);
-      state.apply(skeleton);
-      skeleton.updateWorldTransform();
+      target.state.update(delta);
+      target.state.apply(target.skeleton);
+      target.skeleton.updateWorldTransform();
       draw();
-      return { ok: true, action: currentAction, fallback: requested !== currentAction };
+      return { ok: true, view: target.key, action: currentView._lastAction, fallback: requested !== currentView._lastAction };
     },
     reset() {
-      currentAction = null;
-      currentTimeScale = 1;
-      if (state) state.clearTracks();
+      for (var i = 0; i < views.length; i++) { views[i].state.clearTracks(); views[i]._lastAction = null; }
+      if (currentView) currentView.skeleton.setToSetupPose();
       return { ok: true };
     },
     snapshot() {

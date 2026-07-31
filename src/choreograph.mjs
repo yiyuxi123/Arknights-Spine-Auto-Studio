@@ -216,18 +216,25 @@ export async function llmChoreograph(prompt, animations, { character = 'unknown'
 // ---------------------------------------------------------------------------
 // Validation & normalization shared by both paths.
 // ---------------------------------------------------------------------------
-export function validateTimeline(timeline, animations) {
+export function validateTimeline(timeline, animations, animationsByView) {
   if (!timeline || !Array.isArray(timeline.timeline) || timeline.timeline.length === 0) {
     throw new Error('Timeline must contain a non-empty "timeline" array');
   }
-  const known = new Set(animations.map((animation) => animation.name));
-  const fallback = animations[0]?.name ?? null;
+  const viewNames = animationsByView ? Object.keys(animationsByView) : [];
+  const defaultView = viewNames[0] || null;
+  const flatKnown = new Set((animations || []).map((a) => a.name));
+  const flatFallback = animations?.[0]?.name ?? null;
   const segments = timeline.timeline.map((segment, index) => {
+    const rawView = typeof segment.view === 'string' && segment.view ? segment.view : defaultView;
+    const view = viewNames.includes(rawView) ? rawView : (defaultView || null);
+    const pool = view && animationsByView ? (animationsByView[view] || []) : (animations || []);
+    const known = new Set(pool.map((a) => a.name));
+    const fallback = pool[0]?.name ?? flatFallback;
     const action = typeof segment.action === 'string' ? segment.action : null;
     let resolved = action && known.has(action) ? action : null;
     if (!resolved) {
       const fuzzy = action
-        ? animations
+        ? pool
             .map((animation) => ({
               name: animation.name,
               distance: levenshtein(action.toLowerCase(), animation.name.toLowerCase()),
@@ -235,20 +242,24 @@ export function validateTimeline(timeline, animations) {
             .sort((a, b) => a.distance - b.distance)[0]
         : null;
       resolved = fuzzy?.name ?? fallback;
-      console.warn(`  [warn] segment ${index}: "${action}" 不存在，已替换为 "${resolved}"`);
+      if (action && resolved !== action) {
+        console.warn(`  [warn] segment ${index}: "${action}" 不存在（视图 ${view || 'default'}），已替换为 "${resolved}"`);
+      }
     }
     const duration = Number(segment.duration);
     const loop = segment.loop === true;
     let timeScale = Number(segment.timeScale);
     if (!Number.isFinite(timeScale) || timeScale <= 0) timeScale = 1;
     timeScale = Math.min(10, Math.max(0.1, timeScale));
-    return {
+    const out = {
       action: resolved,
       loop,
       duration: Number.isFinite(duration) && duration > 0 ? duration : 2,
       timeScale,
       description: typeof segment.description === 'string' ? segment.description : '',
     };
+    if (view) out.view = view;
+    return out;
   });
   return { character: timeline.character ?? 'unknown', fps: normalizeFps(timeline.fps), timeline: segments };
 }

@@ -12,6 +12,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export async function renderTimelineToGif({
   rootDir,
   assets,
+  assetsList,
   timeline,
   outFile,
   width = 640,
@@ -32,10 +33,14 @@ export async function renderTimelineToGif({
   try {
     await cdp.open();
     const rel = (p) => '/' + String(p).replace(/\\/g, '/').replace(/^\/?/, '');
+    const views = Array.isArray(assetsList) && assetsList.length
+      ? assetsList.map((a) => ({ name: a.name || 'default', skel: rel(a.skel), atlas: rel(a.atlas), png: rel(a.png) }))
+      : [{ name: 'default', skel: rel(assets.skel), atlas: rel(assets.atlas), png: rel(assets.png) }];
     const query = new URLSearchParams({
-      skel: rel(assets.skel),
-      atlas: rel(assets.atlas),
-      png: rel(assets.png),
+      skel: views[0].skel,
+      atlas: views[0].atlas,
+      png: views[0].png,
+      views: JSON.stringify(views),
       w: String(width),
       h: String(height),
       bg: background,
@@ -67,7 +72,7 @@ export async function renderTimelineToGif({
       const delta = 1 / fps; // 实时间，速率由 trackEntry.timeScale 应用
       const stepResult = await evalJs(
         send,
-        `studio.step(${JSON.stringify({ action: seg.action, loop: seg.loop, delta, timeScale: seg.timeScale || 1 })})`,
+        `studio.step(${JSON.stringify({ action: seg.action, view: seg.view || 'default', loop: seg.loop, delta, timeScale: seg.timeScale || 1 })})`,
       );
       if (stepResult && stepResult.fallback) {
         console.warn(`  [warn] 动作 "${seg.action}" 不存在，已替换为 "${stepResult.action}"`);

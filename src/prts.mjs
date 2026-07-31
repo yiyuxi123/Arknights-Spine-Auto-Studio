@@ -282,99 +282,81 @@ async function existsFile(file) {
   }
 }
 
-export async function fetchCharacterFromPrts({ character, key, enemy, skin, view, outDir = join(root, 'assets'), force = false, onLog = console.log } = {}) {
-  const { charId, meta, kind } = await resolveModelRef({ character, key, enemy, onLog });
-  const chosen = pickSkinView(meta, { skin, view });
-  if (!chosen.file) throw new Error(`皮肤「${chosen.skin}」视图「${chosen.view}」缺少 file 字段`);
 
-  const targetDir = resolve(outDir, charId);
-  await mkdir(targetDir, { recursive: true });
-  const prefix = meta.prefix;
-  const base = basename(chosen.file); // e.g. build_char_002_amiya
-  const urls = {
-    skel: `${prefix}${chosen.file}.skel`,
-    atlas: `${prefix}${chosen.file}.atlas`,
-  };
+const DONE_MSG = '[prts] \u5b8c\u6210\uff1a';
+
+const SKIN_NOT_EXIST = '\u4e0d\u5b58\u5728\u3002\u53ef\u7528: ';
+const NO_VIEWS = '\u6ca1\u6709\u53ef\u7528\u89c6\u56fe';
+const VIEW_NO_FILE = '\u7f3a\u5c11 file \u5b57\u6bb5\uff0c\u8df3\u8fc7';
+const VIEW_FAIL = '\u89c6\u56fe\u300c';
+const VIEW_FAIL2 = '\u300d\u4e0b\u8f7d\u5931\u8d25\uff1a';
+const ALL_FAIL = '\u5168\u90e8\u89c6\u56fe\u4e0b\u8f7d\u5931\u8d25';
+
+const SKIP_MSG = '[prts] \u5df2\u6709 ';
+const DOWN_MSG = '[prts] \u4e0b\u8f7d ';
+const OK_MSG = '[prts] OK ';
+const KB_MSG = ' KB';
+const ATLAS_ERR = 'atlas \u672a\u53d1\u73b0\u8d34\u56fe\u9875: ';
+const ALIGN_MSG = '[prts] \u81ea\u52a8\u5bf9\u9f50\u8d34\u56fe\uff1a';
+const ALIGN_SKIP = '[align] \u8df3\u8fc7\u5bf9\u9f50\uff1a';
+const SPINE_ERR = 'PRTS \u6a21\u578b ';
+const SPINE_ERR2 = ' \u662f Spine ';
+const SPINE_ERR3 = ' \u683c\u5f0f\uff0c\u5f53\u524d\u64ad\u653e\u5668\u4ec5\u652f\u6301 3.8.x\u3002';
+const META_FAIL = '[prts] \u4fdd\u5b58 meta.json \u5931\u8d25\uff1a';
+const ENRICH_MSG = '[prts] \u8d44\u6599\u5df2\u8865\u5168\uff1a';
+const ENRICH_SKIP = '[prts] \u8d44\u6599\u8865\u5168\u8df3\u8fc7\uff1a';
+const ART_SKIP = '[prts] \u7f8e\u672f\u4e0b\u8f7d\u8df3\u8fc7\uff1a';
+
+async function downloadView({ charId, meta, kind, skinKey, viewKey, file, targetDir, prefix, force, onLog }) {
+  const base = basename(file);
   const files = { skel: join(targetDir, base + '.skel'), atlas: join(targetDir, base + '.atlas') };
-
-  // 下载 skel + atlas
-  for (const kind of EXTS) {
-    const ext = kind; // '.skel' | '.atlas'
-    const url = urls[ext.slice(1)];
+  for (const ext of EXTS) {
+    const url = `${prefix}${file}${ext}`;
     const target = files[ext.slice(1)];
     if (!force && (await existsFile(target))) {
-      if (onLog) onLog(`[prts] 已有 ${basename(target)}，跳过（--force 可强制重下）`);
+      if (onLog) onLog(SKIP_MSG + basename(target) + '\uff08--force \u53ef\u5f3a\u5236\u91cd\u4e0b\uff09');
       continue;
     }
-    if (onLog) onLog(`[prts] 下载 ${url}`);
+    if (onLog) onLog(DOWN_MSG + url);
     const bytes = await fetchBytes(url);
     await writeFile(target, bytes);
-    if (onLog) onLog(`[prts] OK ${basename(target)}  ${(bytes.length / 1024).toFixed(0)} KB`);
+    if (onLog) onLog(OK_MSG + basename(target) + '  ' + (bytes.length / 1024).toFixed(0) + KB_MSG);
   }
-
-  // 解析 atlas 得到所有贴图页并下载
   const atlasText = (await readFile(files.atlas, 'utf8')).toString();
   const pages = listAtlasPages(atlasText);
-  if (pages.length === 0) throw new Error(`atlas 未发现贴图页: ${files.atlas}`);
+  if (pages.length === 0) throw new Error(ATLAS_ERR + files.atlas);
   for (const page of pages) {
     const target = join(targetDir, page);
-    if (!force && (await existsFile(target))) {
-      if (onLog) onLog(`[prts] 已有 ${page}，跳过`);
-      continue;
-    }
-    const url = `${prefix}${chosen.file.replace(/[^/]*$/, '')}${page}`;
-    if (onLog) onLog(`[prts] 下载 ${url}`);
+    if (!force && (await existsFile(target))) { if (onLog) onLog(SKIP_MSG + page + '\uff0c\u8df3\u8fc7'); continue; }
+    const url = `${prefix}${file.replace(/[^/]*$/, '')}${page}`;
+    if (onLog) onLog(DOWN_MSG + url);
     const bytes = await fetchBytes(url);
     await writeFile(target, bytes);
-    if (onLog) onLog(`[prts] OK ${page}  ${(bytes.length / 1024).toFixed(0)} KB`);
+    if (onLog) onLog(OK_MSG + page + '  ' + (bytes.length / 1024).toFixed(0) + KB_MSG);
   }
-
-  // 校验 skel 版本兼容（Spine 3.8 播放器）
-    // 对齐 atlas 声明尺寸与实际 PNG 尺寸（PRTS 常把贴图降采样到 2/3，不修复会渲染散架）
   try {
     const { alignAssetsInPlace } = await import('./align.mjs');
     const pngPath = join(targetDir, pages[0]);
     const align = alignAssetsInPlace({ atlasPath: files.atlas, pngPath, onLog });
-    if (align.aligned) {
-      if (onLog) onLog(`[prts] 自动对齐贴图：${align.action} ${align.from} -> ${align.to}`);
-    }
-  } catch (alignErr) {
-    if (onLog) onLog(`[align] 跳过对齐：${alignErr.message}`);
-  }
-
-const { parseSkeleton } = await import('./skel.mjs');
+    if (align.aligned && onLog) onLog(ALIGN_MSG + align.action + ' ' + align.from + ' -> ' + align.to);
+  } catch (alignErr) { if (onLog) onLog(ALIGN_SKIP + alignErr.message); }
+  const { parseSkeleton } = await import('./skel.mjs');
   const skelBytes = new Uint8Array(await readFile(files.skel));
   const version = parseSkeleton(skelBytes).version ?? '';
   if (!version.startsWith('3.8')) {
-    throw new Error(
-      `PRTS 模型 ${charId} 是 Spine ${version} 格式，当前播放器仅支持 3.8.x。` +
-        `可尝试下载 spine38 版本资源或升级播放器。`,
-    );
+    throw new Error(SPINE_ERR + charId + SPINE_ERR2 + version + SPINE_ERR3);
   }
-
-  const result = {
-    skel: files.skel,
-    atlas: files.atlas,
-    png: join(targetDir, pages[0]),
-    dir: targetDir,
-    characterName: meta.name ?? charId,
-    charId,
-    kind,
-    skin: chosen.skin,
-    view: chosen.view,
-    version,
-    animations: parseSkeleton(skelBytes).animations?.map((a) => ({ name: a.name, duration: a.duration })) ?? [],
+  return {
+    base, view: viewKey, skin: skinKey,
+    skel: files.skel, atlas: files.atlas, png: join(targetDir, pages[0]),
+    version, animations: parseSkeleton(skelBytes).animations?.map((a) => ({ name: a.name, duration: a.duration })) ?? [],
   };
-  // 保存 PRTS 元数据（角色名 + 皮肤/视图清单），供本地模型库按 PRTS 目录逻辑展示
+}
+
+async function writeMetaAndEnrich({ charId, meta, kind, targetDir, onLog = console.log }) {
   try {
-    await writeFile(
-      join(targetDir, 'meta.json'),
-      JSON.stringify({ charId, name: meta.name ?? charId, kind, prefix: meta.prefix, skin: meta.skin, fetchedAt: new Date().toISOString() }, null, 2),
-    );
-  } catch (metaErr) {
-    if (onLog) onLog(`[prts] 保存 meta.json 失败：${metaErr.message}`);
-  }
-  // 补全干员/敌人资料（职业/稀有度/阵营/属性等）并合并写回 meta.json
+    await writeFile(join(targetDir, 'meta.json'), JSON.stringify({ charId, name: meta.name ?? charId, kind, prefix: meta.prefix, skin: meta.skin, fetchedAt: new Date().toISOString() }, null, 2));
+  } catch (metaErr) { if (onLog) onLog(META_FAIL + metaErr.message); }
   try {
     const { enrichCharMeta, enrichEnemyMeta } = await import('./info.mjs');
     const extra = kind === 'char' ? await enrichCharMeta(charId) : (meta.name && meta.name !== charId ? await enrichEnemyMeta(meta.name) : null);
@@ -395,24 +377,75 @@ const { parseSkeleton } = await import('./skel.mjs');
       merged.enemyMove = info['\u884c\u52a8\u65b9\u5f0f'] || '';
       merged.description = info['\u63cf\u8ff0'] || '';
       merged.stats = extra.stats || null;
-      // 美术资源（头像 / 精英立绘 / 皮肤立绘 / 职业图标）
       try {
         const { enrichArt } = await import('./info.mjs');
         const art = await enrichArt({ charId, name: merged.name, pageTitle: extra.pageTitle, kind, meta: merged, dirPath: targetDir, onLog });
         if (art) merged.art = art;
       } catch (artErr) {
-        if (onLog) onLog(`[prts] 美术下载跳过：${artErr.message}`);
+        if (onLog) onLog(ART_SKIP + artErr.message);
       }
-
       await writeFile(join(targetDir, 'meta.json'), JSON.stringify(merged, null, 2));
-      if (onLog) onLog(`[prts] 资料已补全：${extra.pageTitle}`);
+      if (onLog) onLog(ENRICH_MSG + extra.pageTitle);
     }
   } catch (enrichErr) {
-    if (onLog) onLog(`[prts] 资料补全跳过：${enrichErr.message}`);
+    if (onLog) onLog(ENRICH_SKIP + enrichErr.message);
   }
+}
 
-  if (onLog) onLog(`[prts] 完成：${result.characterName}（${charId} / ${chosen.skin} / ${chosen.view}，Spine ${version}）`);
+export async function fetchCharacterFromPrts({ character, key, enemy, skin, view, outDir = join(root, 'assets'), force = false, onLog = console.log } = {}) {
+  const { charId, meta, kind } = await resolveModelRef({ character, key, enemy, onLog });
+  const chosen = pickSkinView(meta, { skin, view });
+  if (!chosen.file) throw new Error('\u76ae\u80a4\u300c' + chosen.skin + '\u300d\u89c6\u56fe\u300c' + chosen.view + '\u300d\u7f3a\u5c11 file \u5b57\u6bb5');
+  const targetDir = resolve(outDir, charId);
+  await mkdir(targetDir, { recursive: true });
+  const prefix = meta.prefix;
+  const v = await downloadView({ charId, meta, kind, skinKey: chosen.skin, viewKey: chosen.view, file: chosen.file, targetDir, prefix, force, onLog });
+  const result = {
+    skel: v.skel, atlas: v.atlas, png: v.png, dir: targetDir,
+    characterName: meta.name ?? charId, charId, kind, skin: chosen.skin, view: chosen.view,
+    version: v.version, animations: v.animations,
+  };
+  await writeMetaAndEnrich({ charId, meta, kind, targetDir, onLog });
+  if (onLog) onLog(DONE_MSG + result.characterName + '\uff08' + charId + ' / ' + chosen.skin + ' / ' + chosen.view + '\uff0cSpine ' + v.version + '\uff09');
   return result;
+}
+
+export async function fetchAllViewsFromPrts({ character, key, enemy, skin, outDir = join(root, 'assets'), force = false, onLog = console.log } = {}) {
+  const { charId, meta, kind } = await resolveModelRef({ character, key, enemy, onLog });
+  const skins = Object.keys(meta.skin ?? {});
+  if (skins.length === 0) throw new Error('\u89d2\u8272 ' + (meta.name ?? meta.prefix) + ' \u6ca1\u6709\u53ef\u7528\u76ae\u80a4');
+  let skinKey = String(skin ?? '').trim();
+  if (skinKey) {
+    const exact = skins.find((s) => s === skinKey);
+    const partial = skins.find((s) => s.includes(skinKey) || skinKey.includes(s));
+    skinKey = exact ?? partial ?? null;
+    if (!skinKey) throw new Error('\u76ae\u80a4\u300c' + skin + '\u300d' + SKIN_NOT_EXIST + skins.join(' / '));
+  } else {
+    skinKey = skins.includes('\u9ed8\u8ba4') ? '\u9ed8\u8ba4' : skins[0];
+  }
+  const views = meta.skin[skinKey] ?? {};
+  const viewNames = Object.keys(views);
+  if (!viewNames.length) throw new Error('\u76ae\u80a4\u300c' + skinKey + '\u300d' + NO_VIEWS);
+  const targetDir = resolve(outDir, charId);
+  await mkdir(targetDir, { recursive: true });
+  const prefix = meta.prefix;
+  const all = [];
+  for (const viewKey of viewNames) {
+    const file = views[viewKey]?.file ?? null;
+    if (!file) { if (onLog) onLog('[prts] \u89c6\u56fe\u300c' + viewKey + '\u300d' + VIEW_NO_FILE); continue; }
+    try {
+      const v = await downloadView({ charId, meta, kind, skinKey, viewKey, file, targetDir, prefix, force, onLog });
+      all.push(v);
+    } catch (e) { if (onLog) onLog('[prts] ' + VIEW_FAIL + viewKey + VIEW_FAIL2 + e.message); }
+  }
+  if (!all.length) throw new Error('\u76ae\u80a4\u300c' + skinKey + '\u300d' + ALL_FAIL);
+  await writeMetaAndEnrich({ charId, meta, kind, targetDir, onLog });
+  if (onLog) onLog(DONE_MSG + (meta.name ?? charId) + '\uff08' + charId + ' / ' + skinKey + ' / \u5168\u90e8\u89c6\u56fe\uff0c' + all.length + ' \u4e2a\uff09');
+  return {
+    charId, characterName: meta.name ?? charId, kind, skin: skinKey, dir: targetDir,
+    version: all[0].version,
+    views: all,
+  };
 }
 
 export async function listSkinsFromPrts({ character, key, enemy, onLog = console.log } = {}) {
