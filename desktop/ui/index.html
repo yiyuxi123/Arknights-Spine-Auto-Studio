@@ -115,7 +115,7 @@
         <span id="cmp-info" class="muted"></span>
       </div>
       <div id="h-compare-wrap" hidden>
-        <img id="h-compare-img" alt="方案对比图" style="width:100%;max-width:880px;border-radius:10px;background:#0d1117">
+        <img id="h-compare-img" class="clickable-img" alt="方案对比图" style="width:100%;max-width:880px;border-radius:10px;background:#0d1117" title="点击查看大图">
         <div class="hi-plans" id="h-plans"></div>
       </div>
     </div>
@@ -132,13 +132,15 @@
     </div>
     <div id="hi-log" class="log" hidden></div>
     <div id="hi-result" class="card" hidden>
-      <h3>执行结果</h3>
+      <h3>执行结果 <span class="hint">点击图片放大查看真实画质（可 1:1 像素级对比）</span></h3>
       <div class="compare">
-        <figure><figcaption>原图</figcaption><img id="hi-before" alt="原图"></figure>
-        <figure><figcaption>高清化后</figcaption><img id="hi-after" alt="高清化"></figure>
+        <figure><figcaption>原图 · 点击查看大图</figcaption><img id="hi-before" class="clickable-img" alt="原图"></figure>
+        <figure><figcaption>高清化后 · 点击查看大图</figcaption><img id="hi-after" class="clickable-img" alt="高清化"></figure>
       </div>
       <div class="row wrap" style="margin-top:10px">
         <button id="btn-hi-use" class="primary">✅ 采用这套高清化资源</button>
+        <button id="btn-hi-locate" class="ghost">📁 在文件夹中定位</button>
+        <button id="btn-hi-open-dir" class="ghost">打开输出目录</button>
         <span id="hi-use-info" class="muted"></span>
       </div>
     </div>
@@ -231,8 +233,21 @@
 <!-- ===================== 预览灯箱 ===================== -->
 <div id="lightbox" class="overlay" hidden>
   <div class="modal lb">
-    <div class="modal-head"><h3 id="lb-title"></h3><button id="btn-lb-close" class="ghost">✕</button></div>
+    <div class="modal-head"><h3 id="lb-title"></h3></div>
+    <div class="lb-tools">
+      <button id="lb-zoom-out" class="ghost sm" title="缩小 (Ctrl+滚轮)">−</button>
+      <span id="lb-zoom-pct" class="muted">适应窗口</span>
+      <button id="lb-zoom-in" class="ghost sm" title="放大 (Ctrl+滚轮)">＋</button>
+      <button id="lb-zoom-100" class="ghost sm" title="100% 像素 1:1">1:1</button>
+      <button id="lb-zoom-fit" class="ghost sm" title="适应窗口">适应</button>
+      <button id="lb-locate" class="ghost sm" title="在资源管理器中定位该文件">📁 定位文件</button>
+      <span class="spacer"></span>
+      <button id="btn-lb-close" class="ghost">✕ 关闭</button>
+    </div>
     <div id="lb-body" class="lb-body"></div>
+    <div id="lb-img-wrap" class="lb-viewport" hidden>
+      <img id="lb-img" alt="预览" title="单击切换 适应窗口 / 1:1">
+    </div>
   </div>
 </div>
 

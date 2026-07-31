@@ -1425,6 +1425,7 @@ $('#btn-compare').addEventListener('click', async () => {
     const img = $('#h-compare-img');
     img.onerror = () => { $('#cmp-info').textContent = '❌ 对比图加载失败，请重试'; };
     img.src = result.file.url;
+    state.cmpFile = result.file;
     $('#h-compare-wrap').hidden = false;
     $('#cmp-info').textContent = '✅ 对比图已生成 · 点下方任一方案卡即可选中（灰=原图 蓝=Lanczos 绿=Real-ESRGAN 紫=Waifu2x）';
     renderHiPlans();
@@ -1477,8 +1478,13 @@ $('#btn-hi').addEventListener('click', async () => {
         done++;
         if (done === targets.length) {
           $('#hi-result').hidden = false;
-          showImg('#hi-before', assetUrl(targets[0].files.png));
-          showImg('#hi-after', png.url);
+          state.hiResult = {
+            before: { url: assetUrl(targets[0].files.png), path: targets[0].files.png },
+            after: { url: png.url, path: png.path },
+            dir: String(png.path || '').replace(/[\\/][^\\/]*$/, ''),
+          };
+          showImg('#hi-before', state.hiResult.before.url);
+          showImg('#hi-after', state.hiResult.after.url);
         }
       } else {
         $('#hi-log').innerHTML += '<div class="err">❌ ' + escapeHtml(m.name || '') + ' 高清化产物缺少文件</div>';
@@ -1502,6 +1508,12 @@ $('#btn-hi-skip').addEventListener('click', () => {
   for (const m of targets) setAssetSet(m.id, null);
   $('#hi-use-info').textContent = '已使用原图资源';
 });
+
+$('#hi-before').addEventListener('click', () => { if (state.hiResult) openImageViewer('原图（单击切换 适应/1:1，Ctrl+滚轮缩放）', state.hiResult.before.url, state.hiResult.before.path); });
+$('#hi-after').addEventListener('click', () => { if (state.hiResult) openImageViewer('高清化后（单击切换 适应/1:1，Ctrl+滚轮缩放）', state.hiResult.after.url, state.hiResult.after.path); });
+$('#h-compare-img').addEventListener('click', () => { const src = $('#h-compare-img').src; if (src) openImageViewer('方案对比图（单击切换 适应/1:1，Ctrl+滚轮缩放）', src, state.cmpFile ? state.cmpFile.path : ''); });
+$('#btn-hi-locate').addEventListener('click', () => { if (state.hiResult) openFolder(state.hiResult.after.path); });
+$('#btn-hi-open-dir').addEventListener('click', () => { if (state.hiResult) openFolder(state.hiResult.dir); });
 
 // ---------------------------------------------------------------------------
 // 任务与输出
@@ -1582,12 +1594,58 @@ function renderOutputs() {
 // ---------------------------------------------------------------------------
 // 灯箱 / 打开文件夹
 // ---------------------------------------------------------------------------
-function openLightbox(title, html) {
+let lbZoom = 1, lbFit = true, lbPath = '';
+function lbApply() {
+  const img = $('#lb-img');
+  const pct = $('#lb-zoom-pct');
+  if (!pct) return;
+  if (lbFit) {
+    img.style.width = '100%';
+    img.style.height = 'auto';
+    pct.textContent = '适应窗口';
+  } else {
+    img.style.width = Math.max(1, Math.round(img.naturalWidth * lbZoom)) + 'px';
+    img.style.height = 'auto';
+    pct.textContent = Math.round(lbZoom * 100) + '%';
+  }
+}
+function lbZoomBy(f) {
+  lbFit = false;
+  lbZoom = Math.min(16, Math.max(0.05, Math.round((lbZoom || 1) * f * 100) / 100));
+  lbApply();
+}
+function openImageViewer(title, src, absPath) {
+  lbZoom = 1; lbFit = true; lbPath = absPath || '';
   $('#lb-title').textContent = title;
+  $('#lb-body').hidden = true;
+  const wrap = $('#lb-img-wrap');
+  const img = $('#lb-img');
+  wrap.hidden = false;
+  img.onload = () => { wrap.scrollTop = 0; wrap.scrollLeft = 0; lbApply(); };
+  img.src = src;
+  $('#lightbox').hidden = false;
+  lbApply();
+}
+function openLightbox(title, html) {
+  lbPath = '';
+  $('#lb-title').textContent = title;
+  $('#lb-img-wrap').hidden = true;
+  $('#lb-body').hidden = false;
   $('#lb-body').innerHTML = html;
   $('#lightbox').hidden = false;
 }
 $('#btn-lb-close').addEventListener('click', () => { $('#lightbox').hidden = true; });
+$('#lb-zoom-out').addEventListener('click', () => lbZoomBy(1 / 1.25));
+$('#lb-zoom-in').addEventListener('click', () => lbZoomBy(1.25));
+$('#lb-zoom-100').addEventListener('click', () => { lbFit = false; lbZoom = 1; lbApply(); });
+$('#lb-zoom-fit').addEventListener('click', () => { lbFit = true; lbApply(); });
+$('#lb-locate').addEventListener('click', () => { if (lbPath) openFolder(lbPath); else alert('该内容没有对应的本地文件'); });
+$('#lb-img').addEventListener('click', () => { lbFit = !lbFit; if (!lbFit) lbZoom = 1; lbApply(); });
+$('#lb-img-wrap').addEventListener('wheel', (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  lbZoomBy(e.deltaY < 0 ? 1.25 : 1 / 1.25);
+}, { passive: false });
 $('#lightbox').addEventListener('click', (e) => {
   if (e.target === $('#lightbox')) $('#lightbox').hidden = true;
 });
