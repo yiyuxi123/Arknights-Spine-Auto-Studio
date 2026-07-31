@@ -14,6 +14,7 @@ import { main } from '../src/pipeline.mjs';
 import { parseSkeleton } from '../src/skel.mjs';
 import { resolveModelRef, fetchCharacterFromPrts, enemyIndex } from '../src/prts.mjs';
 import { alignAssetsInPlace } from '../src/align.mjs';
+import { PerfMonitor } from '../src/perf.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
@@ -29,6 +30,10 @@ fs.mkdirSync(outDir, { recursive: true });
 const ENEMY_INDEX_FILE = path.join(assetsDir, 'enemy-index.json');
 let enemyNameCache = {};
 enemyIndex({ cacheFile: ENEMY_INDEX_FILE }).then((m) => { enemyNameCache = m; }).catch(() => {});
+
+// 性能监测：每 2s 采样进程树 CPU/内存
+const perfMonitor = new PerfMonitor({ intervalMs: 2000 });
+perfMonitor.start();
 
 // ---------- 配置（config.json：DeepSeek API Key / 模型 / 地址） ----------
 const CONFIG_FILE = path.join(root, 'config.json');
@@ -405,6 +410,10 @@ function modelFromKey(key) {
 // ---------------------------------------------------------------------------
 async function handleApi(req, res, url) {
   const { pathname } = url;
+  if (req.method === 'GET' && pathname === '/api/perf') {
+    sendJson(res, 200, { ok: true, sample: perfMonitor.cached });
+    return;
+  }
   if (req.method === 'GET' && pathname === '/api/state') {
     const ffmpeg = path.join(root, 'vendor/ffmpeg/ffmpeg.exe');
     sendJson(res, 200, {

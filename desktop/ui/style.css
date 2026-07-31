@@ -297,6 +297,8 @@ td input[type=checkbox] { width: 18px; height: 18px; }
   background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line-strong); border-radius: 11px;
   color: var(--muted); font-size: 16px; width: 36px; height: 36px; line-height: 1;
   margin-left: 10px; transition: all 0.18s;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0;
+  flex: 0 0 auto;
 }
 .icon-btn:hover { color: var(--accent); border-color: var(--accent); box-shadow: var(--ring); transform: rotate(12deg); }
 
@@ -573,3 +575,25 @@ button.danger:hover { background: rgba(255, 123, 123, 0.1); border-color: var(--
 /* 高清化资源时：生成页超分控件置灰 */
 .grid4 label.dim { opacity: 0.45; filter: saturate(0.4); }
 #gen-upscale-hint { color: var(--muted); font-size: 12px; }
+
+/* ---------- Performance monitor ---------- */
+.perf-chip { cursor: pointer; color: var(--accent); border-color: rgba(92,179,255,0.35); background: rgba(92,179,255,0.08); }
+.perf-chip:hover { background: rgba(92,179,255,0.18); }
+.perf-modal { width: min(760px, 96vw); }
+.perf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.perf-card { background: rgba(255,255,255,0.03); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px 14px; }
+.perf-card h4 { color: var(--accent); font-size: 13px; margin-bottom: 8px; letter-spacing: 0.3px; }
+.perf-nums { display: flex; gap: 10px; margin-bottom: 10px; }
+.perf-num { flex: 1; background: rgba(5,8,15,0.55); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; text-align: center; }
+.perf-num b { display: block; font-size: 16px; color: var(--text); font-variant-numeric: tabular-nums; }
+.perf-num span { font-size: 11px; color: var(--muted); }
+.perf-chart { width: 100%; height: 130px; background: rgba(5,8,15,0.6); border: 1px solid var(--line); border-radius: 10px; display: block; }
+.perf-chart-label { font-size: 11px; color: var(--muted); margin: 6px 2px 10px; }
+.perf-procs { max-height: 180px; overflow-y: auto; font-size: 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(5,8,15,0.55); }
+.perf-proc { display: flex; justify-content: space-between; gap: 8px; padding: 5px 10px; border-bottom: 1px solid rgba(148,170,210,0.08); font-variant-numeric: tabular-nums; }
+.perf-proc:last-child { border-bottom: 0; }
+.perf-proc.head { color: var(--muted); font-size: 11px; background: rgba(92,179,255,0.06); position: sticky; top: 0; }
+.perf-proc.muted { color: var(--muted); font-size: 11px; justify-content: center; }
+.perf-proc .mono { font-family: var(--mono); color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.perf-proc .mono i { font-style: normal; color: var(--muted); font-size: 10px; }
+@media (max-width: 860px) { .perf-grid { grid-template-columns: 1fr; } }

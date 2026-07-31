@@ -21,6 +21,7 @@ const state = {
   outDir: '',
   assetsDir: '',
   modelFilter: { kind: 'all', class: '', rarity: '', faction: '' },
+  perf: { cpu: [], mem: [] },
 };
 
 const TPL = [
@@ -119,6 +120,103 @@ function setBusy(flag) {
 // ---------------------------------------------------------------------------
 // 设置（DeepSeek API Key / 模型 / 地址）
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 性能监测
+// ---------------------------------------------------------------------------
+function drawPerfChart(canvas, data, { max = 100, color = '#5cb3ff', unit = '%' } = {}) {
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || 560;
+  const h = canvas.clientHeight || 130;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const pad = 8;
+  const n = data.length;
+  if (!n) {
+    ctx.fillStyle = 'rgba(148,170,210,0.5)';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('等待采集数据…', pad, 18);
+    return;
+  }
+  const step = (w - pad * 2) / 59;
+  ctx.strokeStyle = 'rgba(148,170,210,0.14)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad + ((h - pad * 2) * i) / 4;
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - pad, y); ctx.stroke();
+  }
+  ctx.beginPath();
+  data.forEach((v, i) => {
+    const x = pad + i * step;
+    const y = h - pad - (Math.min(v, max) / max) * (h - pad * 2);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  const lastX = pad + (n - 1) * step;
+  ctx.lineTo(lastX, h - pad);
+  ctx.lineTo(pad, h - pad);
+  ctx.closePath();
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, color + '44');
+  g.addColorStop(1, color + '00');
+  ctx.fillStyle = g;
+  ctx.fill();
+  const v = data[n - 1];
+  ctx.fillStyle = color;
+  ctx.font = 'bold 12px sans-serif';
+  ctx.fillText(v.toFixed(1) + unit, pad + 2, 16);
+}
+
+function renderPerf(s) {
+  if (!s || !s.app) return;
+  const setTxt = (id, v) => { const e = $(id); if (e) e.textContent = v; };
+  setTxt('#perf-app-cpu', s.app.cpuPct.toFixed(1) + '%');
+  setTxt('#perf-app-mem', s.app.memMB + ' MB');
+  setTxt('#perf-app-procs', String(s.treeSize || 0));
+  if (s.sys) {
+    setTxt('#perf-sys-cpu', s.sys.cpuPct.toFixed(1) + '%');
+    setTxt('#perf-sys-mem', s.sys.memPct.toFixed(1) + '% · ' + Math.round(s.sys.memUsedMB / 1024) + '/' + Math.round(s.sys.memTotalMB / 1024) + ' GB');
+  }
+  drawPerfChart($('#perf-cpu-chart'), state.perf.cpu, { max: Math.max(100, ...state.perf.cpu, 1) * 1.1, color: '#5cb3ff', unit: '%' });
+  drawPerfChart($('#perf-mem-chart'), state.perf.mem, { max: Math.max(512, ...state.perf.mem, 1) * 1.15, color: '#4ade9a', unit: 'MB' });
+  const box = $('#perf-procs');
+  if (box) {
+    const rows = (s.procs || []).map((p) =>
+      '<div class="perf-proc"><span class="mono">' + escapeHtml(p.name) + ' <i>' + p.pid + '</i></span><span>' + p.cpuPct.toFixed(1) + '%</span><span>' + p.memMB + ' MB</span></div>').join('');
+    box.innerHTML = '<div class="perf-proc head"><span>进程</span><span>CPU</span><span>内存</span></div>' + rows +
+      (s.treeSize ? '<div class="perf-proc muted"><span>合计 ' + s.treeSize + ' 个进程（含渲染 Chrome）</span></div>' : '');
+  }
+}
+
+async function refreshPerf() {
+  try {
+    const r = await api('/api/perf');
+    const s = r && r.sample;
+    const chip = $('#chip-perf');
+    if (!s || !s.app) {
+      if (chip) chip.textContent = '性能 采集中…';
+      return;
+    }
+    if (chip) chip.textContent = '⚡ CPU ' + s.app.cpuPct.toFixed(0) + '% · ' + s.app.memMB + 'MB';
+    state.perf.cpu.push(s.app.cpuPct);
+    state.perf.mem.push(s.app.memMB);
+    if (state.perf.cpu.length > 60) { state.perf.cpu.shift(); state.perf.mem.shift(); }
+    if (!$('#perf-overlay').hidden) renderPerf(s);
+  } catch { /* 忽略 */ }
+}
+
+$('#chip-perf')?.addEventListener('click', () => {
+  $('#perf-overlay').hidden = false;
+  refreshPerf();
+});
+$('#btn-perf-close')?.addEventListener('click', () => { $('#perf-overlay').hidden = true; });
+$('#perf-overlay')?.addEventListener('click', (e) => { if (e.target === $('#perf-overlay')) $('#perf-overlay').hidden = true; });
+
 function openSettings() {
   $('#settings-overlay').hidden = false;
   api('/api/config').then((cfg) => {
@@ -1406,4 +1504,5 @@ function escapeHtml(s) {
   renderPvGrid();
   renderHiPlans();
   setInterval(refreshState, 30000);
+  setInterval(refreshPerf, 2000);
 })();
