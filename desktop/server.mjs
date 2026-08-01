@@ -738,6 +738,10 @@ async function handleApi(req, res, url) {
     if (body.format) argv.push('--format', String(body.format));
     if (body.mix !== undefined && body.mix !== '') argv.push('--mix', String(body.mix));
     if (body.bg) argv.push('--bg', String(body.bg));
+    if (body.fit) {
+      const fitNum = parseFloat(body.fit);
+      if (!Number.isNaN(fitNum) && fitNum > 0.3 && fitNum < 3) argv.push('--fit', String(fitNum));
+    }
     if (body.upscale && parseInt(body.upscale, 10) > 1) argv.push('--upscale', String(body.upscale));
     if (body.sr) argv.push('--sr');
     if (body.srEngine) argv.push('--sr-engine', String(body.srEngine));

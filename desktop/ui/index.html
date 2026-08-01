@@ -209,10 +209,23 @@
       <h3>渲染参数</h3>
       <div class="grid4">
         <label>帧率 <select id="g-fps"><option>30</option><option>60</option></select></label>
-        <label>画布 <select id="g-size"><option>640x640</option><option>1280x1280</option><option>960x960</option></select></label>
+        <label>画布 <select id="g-size"><option>640x640</option><option>960x960</option><option>1280x1280</option><option>1920x1920</option><option>2560x2560</option></select></label>
+        <label>适配 <select id="g-fit" title="角色在画布中的占比：自动按动作幅度铺满；大幅动作若被裁切可调小"><option value="0.92">自动 92%</option><option value="0.8">留边 80%</option><option value="1">满幅 100%</option><option value="1.1">放大 110%</option></select></label>
         <label>格式 <select id="g-format"><option value="gif">GIF（透明）</option><option value="mp4">MP4</option><option value="all">GIF+MP4</option></select></label>
         <label>过渡 <select id="g-mix"><option value="0.2">0.2s</option><option value="0">硬切</option><option value="0.4">0.4s</option></select></label>
-        <label>背景 <input id="g-bg" value="00000000" title="RRGGBBAA，默认透明"></label>
+        <label class="bg-wrap" title="背景色：绿幕/蓝幕/品红方便后期抠图（如 PR 键控），自定义色自动不透明">
+          背景
+          <span class="bg-swatches">
+            <button type="button" class="swatch tr" data-bg="00000000" title="透明（默认）"></button>
+            <button type="button" class="swatch" data-bg="00b140ff" title="绿幕 #00B140" style="background:#00b140"></button>
+            <button type="button" class="swatch" data-bg="0000ffff" title="蓝幕 #0000FF" style="background:#0000ff"></button>
+            <button type="button" class="swatch" data-bg="ff00ffff" title="品红 #FF00FF" style="background:#ff00ff"></button>
+            <button type="button" class="swatch" data-bg="ffffffff" title="纯白" style="background:#fff"></button>
+            <button type="button" class="swatch" data-bg="000000ff" title="纯黑" style="background:#000"></button>
+          </span>
+          <input type="color" id="g-bg-color" value="#00b140" title="自定义颜色（不透明）">
+          <input id="g-bg" value="00000000" title="RRGGBBAA" style="width:86px">
+        </label>
         <label>放大 <select id="g-upscale"><option value="1">1x 原图</option><option value="2">2x Lanczos</option><option value="4">4x Lanczos</option></select></label>
         <label class="checkbox"><input id="g-sr" type="checkbox">AI 超分（Real-ESRGAN）</label>
         <label>超分引擎 <select id="g-sr-engine"><option>realesrgan</option><option>waifu2x</option><option>realcugan</option></select></label>

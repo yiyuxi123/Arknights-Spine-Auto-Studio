@@ -243,6 +243,7 @@ async function cmdRun(args) {
   const fps = Math.min(60, Math.max(1, parseInt(args.fps || '30', 10) || 30));
   const { width, height } = parseSize(args.size || '640x640');
   const mix = parseFloat(args.mix || '0.2') || 0.2;
+  const fit = parseFloat(args.fit || '0.92') || 0.92;
   const background = String(args.bg || '00000000');
   const format = String(args.format || 'gif').toLowerCase();
 
@@ -389,6 +390,7 @@ async function cmdRun(args) {
       fps,
       background,
       mix,
+      fit,
       onFrame: (f, n) => {
         if (f === 1 || f % Math.max(1, Math.round(n / 10)) === 0 || f === n) {
           console.log(`  [render] ${f}/${n} 帧`);
@@ -441,6 +443,7 @@ async function cmdRun(args) {
         fps,
         background,
         mix,
+        fit,
         onFrame: async (rgba, idx, n) => {
           if (pngDir) fs.writeFileSync(path.join(pngDir, `frame-${String(idx - 1).padStart(4, '0')}.png`), encodePng(rgba, width, height));
           if (mp4Writer) await mp4Writer.write(rgba);

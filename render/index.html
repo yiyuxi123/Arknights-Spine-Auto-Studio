@@ -26,7 +26,10 @@
     premultipliedAlpha: (params.get('premult') || '1') !== '0',
     mix: parseFloat(params.get('mix') || '0.2'),
     fit: parseFloat(params.get('fit') || '0.92'),
-    views: null
+    views: null,
+    // optional action whitelist: only these animations influence auto-fit,
+    // so exports zoom to the actions actually used in the timeline
+    actions: (function () { try { var a = params.get('actions'); return a ? JSON.parse(a) : null; } catch (e) { return null; } })()
   };
   try {
     var vs = params.get('views');
@@ -116,7 +119,13 @@
     for (var i = 0; i < anims.length; i++) {
       var anim = anims[i];
       if (anim.duration <= 0) continue;
-      var times = [0, anim.duration * 0.3, anim.duration * 0.6, anim.duration * 0.95];
+      if (cfg.actions && cfg.actions.indexOf(anim.name) < 0) continue;
+      // sample 12 poses across the animation so large-amplitude moves
+      // (e.g. wide arm swings) are included in the auto-fit bounds; sparse
+      // sampling makes the character look small and the export blurry
+      var times = [];
+      for (var k = 0; k < 12; k++) times.push(anim.duration * (0.015 + k * 0.085));
+      times.push(anim.duration * 0.99);
       for (var t = 0; t < times.length; t++) {
         v.skeleton.setToSetupPose();
         v.state.setAnimation(0, anim.name, true);

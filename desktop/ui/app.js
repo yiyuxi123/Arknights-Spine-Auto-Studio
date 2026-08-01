@@ -1235,6 +1235,7 @@ function buildRunBody(extra = {}) {
     format: $('#g-format').value,
     mix: $('#g-mix').value,
     bg: $('#g-bg').value || '00000000',
+    fit: $('#g-fit') ? $('#g-fit').value : '0.92',
     outName: m.name + '-' + modelEntryLabel(m).replace(/[\\/]+/g, '_'),
   };
   if (assets?.isHi) {
@@ -1700,6 +1701,20 @@ function escapeHtml(s) {
 // ---------------------------------------------------------------------------
 // 实时活动状态条（当前任务 + 正在运行的引擎进程）
 // ---------------------------------------------------------------------------
+// 背景调色盘：色卡点击 / 自定义取色 / 手动 hex
+document.querySelectorAll('.bg-swatches .swatch').forEach((b) => {
+  b.addEventListener('click', () => {
+    $('#g-bg').value = b.dataset.bg;
+    const hex = b.dataset.bg.slice(0, 6);
+    if (hex !== '000000' && $('#g-bg-color')) $('#g-bg-color').value = '#' + hex;
+  });
+});
+if ($('#g-bg-color')) {
+  $('#g-bg-color').addEventListener('input', () => {
+    $('#g-bg').value = $('#g-bg-color').value.slice(1) + 'ff';
+  });
+}
+
 const ACT_KIND = { upscale: '高清化', run: '动画生成', preview: '动作预览', fetch: '拉取模型', compare: '方案对比', plan: '时间轴编排', label: '动作打标', enrich: '资料补全', resolve: '解析', inspect: '检查' };
 const actEngines = new Map(); // pid -> { el }
 let actRefreshTimer = null;
@@ -1784,6 +1799,7 @@ setInterval(pollActivity, 1200);
       if (savedForm.size) $('#g-size').value = savedForm.size;
       if (savedForm.format) $('#g-format').value = savedForm.format;
       if (savedForm.mix) $('#g-mix').value = savedForm.mix;
+      if (savedForm.fit) $('#g-fit') && ($('#g-fit').value = savedForm.fit);
       if (savedForm.bg) $('#g-bg').value = savedForm.bg;
       if (savedForm.upscale) $('#g-upscale').value = savedForm.upscale;
       if (savedForm.sr !== undefined) $('#g-sr').checked = !!savedForm.sr;
@@ -1797,6 +1813,7 @@ setInterval(pollActivity, 1200);
     el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', () => {
       try {
         localStorage.setItem('zd.form', JSON.stringify({
+          fit: $('#g-fit') ? $('#g-fit').value : '0.92',
           prompt: $('#tl-prompt').value,
           fps: $('#g-fps').value,
           size: $('#g-size').value,

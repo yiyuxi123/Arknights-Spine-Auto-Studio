@@ -234,6 +234,19 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 @keyframes ae-in { from { opacity: 0; transform: translateX(-10px) scale(0.85); } to { opacity: 1; transform: none; } }
 @keyframes ae-out { to { opacity: 0; transform: scale(0.8); } }
 @keyframes ae-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.bg-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.bg-swatches { display: inline-flex; gap: 4px; align-items: center; }
+.swatch {
+  width: 20px; height: 20px; border-radius: 6px; border: 1px solid var(--line-strong);
+  cursor: pointer; padding: 0; transition: transform 0.12s, box-shadow 0.12s;
+}
+.swatch:hover { transform: scale(1.15); box-shadow: 0 0 8px rgba(124, 110, 255, 0.5); }
+.swatch.tr {
+  background:
+    linear-gradient(45deg, #555 25%, transparent 25%, transparent 75%, #555 75%),
+    linear-gradient(45deg, #555 25%, #888 25%, #888 75%, #555 75%);
+  background-size: 10px 10px; background-position: 0 0, 5px 5px;
+}
 .chip.act { min-width: 120px; text-align: center; font-variant-numeric: tabular-nums; }
 .chip.act.idle { color: var(--ok); border-color: rgba(74, 222, 154, 0.35); background: rgba(74, 222, 154, 0.08); }
 .chip.act.busy { color: var(--accent); border-color: rgba(92, 179, 255, 0.45); background: rgba(92, 179, 255, 0.1); animation: act-pulse 1.6s ease-in-out infinite; }
