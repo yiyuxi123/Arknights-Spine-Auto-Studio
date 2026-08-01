@@ -60,7 +60,8 @@ const ENGINES = {
     url: 'https://github.com/nihui/realcugan-ncnn-vulkan/releases/download/20220728/realcugan-ncnn-vulkan-20220728-windows.zip',
     sizeBytes: 45977449,
     exe: 'realcugan-ncnn-vulkan.exe',
-    defaultScale: 4,
+    // the bundled release only ships up2x models; larger targets are bridged
+    defaultScale: 2,
     // dirs: models-se (2x/3x/4x) > models-pro > models-nose (2x only)
     modelHints: ['models-se', 'models-pro', 'models-nose'],
     // realcugan CLI: -m <model-path-prefix> (no -n model name option)
@@ -307,7 +308,14 @@ export async function resolveEngine(spec = null, { force = false, onLog = () => 
       // realcugan selects the model internally from -m <dir> (no -n option);
       // waifu2x/realesrgan take -m <dir> -n <model>.
       const model = argMode === 'dir-only' ? null : pickForScale(scale);
-      const args = ['-i', tmpIn, '-o', outputFile, '-s', String(scale), '-g', String(gpu), '-t', String(tile)];
+      // model names like up2x/up3x/up4x encode their native scale; never ask
+      // an engine to upscale beyond what its model supports
+      let actualScale = scale;
+      if (model) {
+        const m = String(model).match(/up(\d)x/i);
+        if (m) actualScale = Math.max(1, Math.min(scale, parseInt(m[1], 10)));
+      }
+      const args = ['-i', tmpIn, '-o', outputFile, '-s', String(actualScale), '-g', String(gpu), '-t', String(tile)];
       if (argMode === 'dir-only') {
         if (modelsDir) args.push('-m', modelsDir);
       } else if (modelsDir && model) {
@@ -318,7 +326,7 @@ export async function resolveEngine(spec = null, { force = false, onLog = () => 
         if (!res.ok || !fs.existsSync(outputFile) || fs.statSync(outputFile).size === 0) {
           return { ok: false, error: (res.error || 'engine produced no output').slice(0, 400) };
         }
-        return { ok: true, output: fs.readFileSync(outputFile) };
+        return { ok: true, output: fs.readFileSync(outputFile), scale: actualScale };
       } finally {
         try { fs.rmSync(tmpIn, { force: true }); } catch {}
       }

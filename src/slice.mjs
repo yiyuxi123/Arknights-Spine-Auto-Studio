@@ -386,7 +386,7 @@ export function buildAtlasText({ pageName, width, height, format, filter, repeat
  * @param {(m: string) => void} [opts.onLog]
  * @returns {Promise<{atlasText: string, pages: Array<{name: string, buffer: Buffer}>}>}
  */
-export async function sliceAtlas({ atlasText, readPage, outNameFor, scale, upscalePiece, pad = 4, gap = 2, rotateDir, concurrency = 1, onLog = () => {}, onProgress = null }) {
+export async function sliceAtlas({ atlasText, readPage, outNameFor, scale, upscalePiece, pad = 4, gap = 2, batchGap = 8, rotateDir, concurrency = 1, onLog = () => {}, onProgress = null }) {
   const { pages, regions } = parseAtlasRegions(atlasText);
   if (!pages.length || !regions.length) throw new Error('atlas 无可解析的页面/区域');
   const nineSlice = regions.find((r) => r.split || r.pad);
@@ -400,7 +400,7 @@ export async function sliceAtlas({ atlasText, readPage, outNameFor, scale, upsca
     const buf = readPage(pg.name);
     const { width, height, rgba } = decodePng(buf);
     const { png, width: outW, height: outH, slots } = await slicePage({
-      rgba, pageW: width, pageH: height, regions: own, scale, upscalePiece, pad, gap, rotateDir, concurrency, onLog, onProgress,
+      rgba, pageW: width, pageH: height, regions: own, scale, upscalePiece, pad, gap, batchGap, rotateDir, concurrency, onLog, onProgress,
     });
     const outName = outNameFor(pg.name, pageIdx);
     pageIdx += 1;

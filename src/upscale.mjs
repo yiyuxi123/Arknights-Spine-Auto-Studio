@@ -203,6 +203,10 @@ export function upscalePng(pngBuffer, scale) {
  *   whole-sheet path when the atlas has 9-slice regions or no regions.
  * @param {number} [opts.sliceJobs]     parallel engine processes during slice
  *   upscale (default 4) — saturates GPU/CPU instead of idling between pieces
+ * @param {number} [opts.slicePad]       transparent padding per piece (source px).
+ *   Auto: 4 for waifu2x, 8 for large-receptive-field engines (realesrgan/realcugan)
+ * @param {number} [opts.sliceGap]       transparent gap between pieces (source px).
+ *   Auto: 8 / 16 accordingly. Isolation holds when content spacing > receptive field.
  * @param {object|null} [opts.sr]      resolved SR engine handle (from sr.mjs)
  * @param {number} [opts.srScale]      engine's own scale; 0 = engine default
  * @param {number} [opts.srGpu]        engine GPU id (default 0)
@@ -221,6 +225,8 @@ export async function prepareUpscaledAssets({
   srTile = 0,
   slice = false,
   sliceJobs = 6,
+  slicePad = null,
+  sliceGap = null,
   onLog = () => {},
 }) {
   const atlasText = fs.readFileSync(atlasPath, 'utf8');
@@ -250,6 +256,12 @@ export async function prepareUpscaledAssets({
         }
       : (rgba, w, h, targetW, targetH) => resizeRgba(rgba, w, h, targetW, targetH);
     try {
+      // engine-aware isolation: large-receptive-field engines get a wider
+      // transparent moat so batch packing can never bleed content across pieces
+      const isLargeRF = !!(sr && /realesrgan|realcugan/i.test(sr.name + ' ' + sr.label));
+      const usePad = slicePad ?? (isLargeRF ? 8 : 4);
+      const useGap = sliceGap ?? (isLargeRF ? 16 : 8);
+      onLog('[slice] 隔离参数: pad=' + usePad + 'px gap=' + useGap + 'px（' + (isLargeRF ? '大感受野引擎' : '标准') + '）');
       const result = await sliceAtlas({
         atlasText,
         readPage: (pageName) => {
@@ -260,6 +272,9 @@ export async function prepareUpscaledAssets({
         outNameFor: (pageName, i) => (i === 0 ? srcName0 : pageName),
         scale,
         upscalePiece,
+        pad: usePad,
+        gap: useGap,
+        batchGap: useGap,
         concurrency: sliceJobs,
         onLog,
         onProgress: (p) => onLog('[slice] 放大进度 ' + p.done + '/' + p.total),
@@ -363,6 +378,8 @@ export async function main(argv = process.argv.slice(2)) {
   --scale N         放大倍数（整数，默认 2）
   --slice           切片模式：按 atlas 逐片放大后重组（质量更佳，推荐）
   --slice-jobs N    切片放大并发引擎进程数（默认 4，榨干 GPU/CPU）
+  --slice-pad N     每片透明垫边（源像素；默认自动：waifu2x=4，大感受野引擎=8）
+  --slice-gap N     片间透明间距（源像素；默认自动：8 / 16）
   --out DIR         输出目录（默认与源文件同目录下的 <name>-hi/）
   --sr              使用 AI 超分引擎放大 PNG（默认 Real-ESRGAN anime6B）
   --sr-engine PATH  指定已下载的 ncnn-vulkan 引擎 exe 路径
@@ -391,6 +408,8 @@ export async function main(argv = process.argv.slice(2)) {
     srScale: parseInt(args['sr-scale'] || '0', 10) || 0,
     slice: !!args.slice,
     sliceJobs: parseInt(args['slice-jobs'] || '6', 10) || 6,
+    slicePad: args['slice-pad'] ? parseInt(args['slice-pad'], 10) || null : null,
+    sliceGap: args['slice-gap'] ? parseInt(args['slice-gap'], 10) || null : null,
     onLog: (m) => console.log(m),
   });
   console.log(`[done] 同步放大 x${scale} 完成:`);
