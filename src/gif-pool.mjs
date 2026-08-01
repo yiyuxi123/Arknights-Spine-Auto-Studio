@@ -23,7 +23,7 @@ export class GifWorkerPool {
         w._busy = null;
         if (task) {
           if (msg.error) task.reject(new Error('gif worker: ' + msg.error));
-          else task.resolve(msg.compressed);
+          else task.resolve(msg.compressed !== undefined ? msg.compressed : msg.straight);
         }
         this._next(w);
       });
@@ -47,7 +47,7 @@ export class GifWorkerPool {
   _run(w, task) {
     w._busy = task;
     try {
-      w.postMessage({ id: task.id, rgba: task.rgba, width: task.width, height: task.height, palette: task.palette, straight: !!task.straight }, [task.rgba.buffer]);
+      w.postMessage({ id: task.id, op: task.op, rgba: task.rgba, width: task.width, height: task.height, palette: task.palette, straight: !!task.straight }, [task.rgba.buffer]);
     } catch (e) {
       w._busy = null;
       task.reject(e);
@@ -62,6 +62,17 @@ export class GifWorkerPool {
     }
     return new Promise((resolve, reject) => {
       const task = { id: 0, resolve, reject, rgba: frame, width, height, palette, straight };
+      const w = this.idle.pop();
+      if (w) this._run(w, task);
+      else this.waiting.push(task);
+    });
+  }
+  // straighten (flip + un-premultiply) a raw WebGL frame on a worker
+  straightenOnly(frame, width, height) {
+    this._ensure();
+    if (!this.workers.length) return Promise.resolve(straightenRgba(frame, width, height));
+    return new Promise((resolve, reject) => {
+      const task = { id: 0, resolve, reject, rgba: frame, width, height, straight: true, op: 'straighten' };
       const w = this.idle.pop();
       if (w) this._run(w, task);
       else this.waiting.push(task);

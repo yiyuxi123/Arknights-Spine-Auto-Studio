@@ -31,9 +31,9 @@ async function renderFrames(assets, timeline) {
     for (let f = 0; f < 2; f++) {
       const seg = timeline.timeline[0];
       await evalJs(send, 'studio.step(' + JSON.stringify({ action: seg.action, loop: seg.loop, delta: 1 / FPS * (seg.timeScale || 1) }) + ')');
-      const dataUrl = await evalJs(send, 'studio.snapshot()');
-      const png = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
-      frames.push(decodePng(png).rgba);
+      const dataUrl = String(await evalJs(send, 'studio.snapshot()'));
+      // snapshot 返回原始 straight-alpha RGBA
+      frames.push(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'));
     }
     return frames;
   } finally {

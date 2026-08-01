@@ -184,5 +184,14 @@ export function createMp4Writer({ width, height, fps, outFile, background = [255
         proc.on('error', reject);
       });
     },
+    // kill the encoder and drop the partial file (used when the frame source
+    // fails mid-render; otherwise ffmpeg would hang waiting on stdin forever)
+    abort() {
+      if (ended) return;
+      ended = true;
+      try { proc.stdin.destroy(); } catch {}
+      try { proc.kill(); } catch {}
+      try { fs.rmSync(outFile, { force: true }); } catch {}
+    },
   };
 }

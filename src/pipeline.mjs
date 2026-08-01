@@ -205,8 +205,9 @@ async function resolveAssets(args) {
   if (args.skel) {
     const skel = path.resolve(args.skel);
     const base = skel.slice(0, skel.lastIndexOf('.'));
-    const atlas = path.resolve(args.atlas || base + '.atlas');
-    const png = path.resolve(args.png || base + '.png');
+    const atlas = path.resolve(typeof args.atlas === 'string' && args.atlas ? args.atlas : base + '.atlas');
+    // --png 在 run 命令中也可能被误当布尔开关：仅接受字符串路径，否则回退默认
+    const png = path.resolve(typeof args.png === 'string' && args.png ? args.png : base + '.png');
     for (const file of [skel, atlas, png]) {
       if (!fs.existsSync(file)) throw new Error(`缺少资源文件: ${file}`);
     }
@@ -429,87 +430,51 @@ async function cmdRun(args) {
       console.log(`[mp4] 合成背景 RGB(${bg.join(',')}) 并编码 ...`);
       mp4Writer = createMp4Writer({ width, height, fps, outFile: mp4File, background: bg, ffmpegPath: ffmpeg.path });
     }
-    const result = await renderFramesToPng({
-      rootDir: root,
-      assets: { skel: relAsset(renderAssets.skel), atlas: relAsset(renderAssets.atlas), png: relAsset(renderAssets.png) },
-      assetsList: renderAssetsList ? renderAssetsList.map((a) => ({ name: a.name, skel: relAsset(a.skel), atlas: relAsset(a.atlas), png: relAsset(a.png) })) : undefined,
-      timeline: plan,
-      width,
-      height,
-      fps,
-      background,
-      mix,
-      onFrame: async (rgba, idx, n) => {
-        if (pngDir) fs.writeFileSync(path.join(pngDir, `frame-${String(idx - 1).padStart(4, '0')}.png`), encodePng(rgba, width, height));
-        if (mp4Writer) await mp4Writer.write(rgba);
-        if (idx % Math.max(1, Math.round(n / 10)) === 0 || idx === n) console.log(`  [frames] ${idx}/${n}`);
-      },
-    });
-    if (pngDir) {
-      console.log(`[done] ${pngDir} (${result.frames} ? PNG)`);
-      outputs.push(pngDir);
-    }
-    if (mp4Writer) {
-      await mp4Writer.end();
-      const sizeKb = (fs.statSync(mp4File).size / 1024).toFixed(1);
-      console.log(`[done] ${mp4File} (${sizeKb} KB)`);
-      outputs.push(mp4File);
+    try {
+      const result = await renderFramesToPng({
+        rootDir: root,
+        assets: { skel: relAsset(renderAssets.skel), atlas: relAsset(renderAssets.atlas), png: relAsset(renderAssets.png) },
+        assetsList: renderAssetsList ? renderAssetsList.map((a) => ({ name: a.name, skel: relAsset(a.skel), atlas: relAsset(a.atlas), png: relAsset(a.png) })) : undefined,
+        timeline: plan,
+        width,
+        height,
+        fps,
+        background,
+        mix,
+        onFrame: async (rgba, idx, n) => {
+          if (pngDir) fs.writeFileSync(path.join(pngDir, `frame-${String(idx - 1).padStart(4, '0')}.png`), encodePng(rgba, width, height));
+          if (mp4Writer) await mp4Writer.write(rgba);
+          if (idx % Math.max(1, Math.round(n / 10)) === 0 || idx === n) console.log(`  [frames] ${idx}/${n}`);
+        },
+      });
+      if (pngDir) {
+        console.log(`[done] ${pngDir} (${result.frames} 张 PNG)`);
+        outputs.push(pngDir);
+      }
+      if (mp4Writer) {
+        await mp4Writer.end();
+        const sizeKb = (fs.statSync(mp4File).size / 1024).toFixed(1);
+        console.log(`[done] ${mp4File} (${sizeKb} KB)`);
+        outputs.push(mp4File);
+      }
+    } catch (err) {
+      // never leave a half-fed ffmpeg hanging on stdin
+      if (mp4Writer) { try { mp4Writer.abort(); } catch {} }
+      throw err;
     }
   }
   return outputs;
 }
 
-// PNG frame export path (same browser pipeline, returns RGBA frames instead of GIF)
-import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession, rmrfRetry } from './cdp.mjs';
-import { decodePng } from './png.mjs';
+// PNG / MP4 frame export path: builds on the shared parallel timeline
+// renderer (renderTimelineFrames), which calls onFrame with straight-alpha
+// RGBA for every frame.
+import { renderTimelineFrames } from './render.mjs';
 async function renderFramesToPng({ rootDir, assets, assetsList, timeline, width, height, fps, background = '00000000', mix = 0.2, chromePath, onFrame }) {
-  const server = await startStaticServer(rootDir);
-  const userDataDir = fs.mkdtempSync(path.join(await import('node:os').then((m) => m.tmpdir()), 'spine-studio-'));
-  const chrome = launchChrome({ chromePath, userDataDir, width, height });
-
-  let cdp = null;
-  try {
-    cdp = new CdpClient(await chrome.wsUrl());
-    await cdp.open();
-    const rel = (p) => '/' + String(p).replace(/\\/g, '/').replace(/^\/?/, '');
-    const views = Array.isArray(assetsList) && assetsList.length
-      ? assetsList.map((a) => ({ name: a.name || 'default', skel: rel(a.skel), atlas: rel(a.atlas), png: rel(a.png) }))
-      : [{ name: 'default', skel: rel(assets.skel), atlas: rel(assets.atlas), png: rel(assets.png) }];
-    const query = new URLSearchParams({ skel: views[0].skel, atlas: views[0].atlas, png: views[0].png, views: JSON.stringify(views), w: String(width), h: String(height), bg: background, mix: String(mix) });
-    const { sessionId } = await newPageSession(cdp, `${server.origin}/render/index.html?${query}`);
-    const send = (m, p) => cdp.send(m, p, sessionId);
-    const load = await evalJs(send, 'studio.load()');
-    if (!load || !load.ok) throw new Error('studio.load failed: ' + (load && load.error));
-    const segments = timeline.timeline;
-    const segDuration = (seg) => (seg.duration || 0) * Math.max(1, parseInt(seg.repeat, 10) || 1);
-    const total = segments.reduce((sum, seg) => sum + segDuration(seg), 0);
-    const frameCount = Math.max(1, Math.round(total * fps));
-    let segIndex = 0, segmentStart = 0, lastCycle = -1;
-    for (let f = 0; f < frameCount; f++) {
-      const t = f / fps;
-      while (segIndex < segments.length - 1 && t >= segmentStart + segDuration(segments[segIndex])) {
-        segmentStart += segDuration(segments[segIndex]);
-        segIndex++;
-        lastCycle = -1;
-      }
-      const seg = segments[segIndex];
-      const repeatN = Math.max(1, parseInt(seg.repeat, 10) || 1);
-      const cycleDur = seg.duration > 0 ? seg.duration : 1;
-      const cycle = Math.min(Math.floor((t - segmentStart) / cycleDur), repeatN - 1);
-      const restart = cycle !== lastCycle;
-      lastCycle = cycle;
-      await evalJs(send, `studio.step(${JSON.stringify({ action: seg.action, view: seg.view || 'default', loop: seg.loop, delta: 1 / fps, timeScale: seg.timeScale || 1, restart })})`);
-      const dataUrl = await evalJs(send, 'studio.snapshot()');
-      const dec = decodePng(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'));
-      if (onFrame) await onFrame(dec.rgba, f + 1, frameCount, seg.action);
-    }
-    return { frames: frameCount };
-  } finally {
-    try { cdp?.close?.(); } catch {}
-    try { await chrome.close(); } catch {}
-    try { await server.close(); } catch {}
-    await rmrfRetry(userDataDir);
-  }
+  return renderTimelineFrames({
+    rootDir, assets, assetsList, timeline, width, height, fps, background, mix, chromePath,
+    onFrame: async (rgba, idx, n, action) => { await onFrame(rgba, idx, n, action); },
+  });
 }
 
 // ---------------------------------------------------------------------------

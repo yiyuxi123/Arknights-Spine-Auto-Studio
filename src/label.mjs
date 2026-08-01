@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession, rmrfRetry } from './cdp.mjs';
+import { encodePng } from './png.mjs';
 
 const DEFAULT_VISION_MODEL = 'qwen-vl-max';
 const DEFAULT_VISION_BASE = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
@@ -98,10 +99,11 @@ export async function renderAllKeyframes({ rootDir, assets, animations, outDir, 
         const t = i === 0 ? 0.05 : Math.min((i / count) * total * 0.8 + 0.05, total * 0.95);
         await evalJs(send, 'studio.step(' + JSON.stringify({ action: a.name, loop: true, delta: Math.max(0.016, t - prevT) }) + ')');
         prevT = t;
-        const dataUrl = await evalJs(send, 'studio.snapshot()');
-        const buf = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
+        const dataUrl = String(await evalJs(send, 'studio.snapshot()'));
+        const rgba = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
         const file = path.join(outDir, safe + '-' + i + '.png');
-        fs.writeFileSync(file, buf);
+        // snapshot 返回原始 straight-alpha RGBA，写文件前重新编码为 PNG
+        fs.writeFileSync(file, encodePng(rgba, width, height));
         files.push(file);
       }
       result[a.name] = files;
