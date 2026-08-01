@@ -17,6 +17,7 @@
     <span id="chip-key" class="chip">DeepSeek …</span>
     <span id="chip-vision" class="chip">千问视觉 …</span>
     <span id="chip-srv" class="chip">服务 …</span>
+    <span id="act" class="chip act idle" title="实时处理状态">● 空闲</span>
     <span id="chip-perf" class="chip perf-chip" title="软件性能监测，点击打开图表">性能 …</span>
   </div>
   <button id="btn-settings" class="icon-btn" title="设置">⚙</button>
@@ -125,6 +126,7 @@
         <label class="checkbox"><input id="h-sr" type="checkbox">AI 超分</label>
         <select id="h-sr-engine"><option>realesrgan</option><option>waifu2x</option><option>realcugan</option></select>
         <label class="checkbox" title="先按 Atlas 把贴图裁成单片，逐片放大后再重组：AI 超分聚焦单片、边缘无串色，质量更佳（推荐）"><input id="h-slice" type="checkbox" checked>按切片高清化</label>
+        <label class="checkbox" title="切片放大时并行启动的 AI 引擎进程数：越大越吃 GPU/CPU（建议 2-8，默认 6 榨满硬件）">并发 <select id="h-slice-jobs"><option>2</option><option>4</option><option selected>6</option><option>8</option><option>12</option><option>16</option></select></label>
         <button id="btn-hi" class="primary">开始高清化</button>
         <span id="hi-plan-tag" class="muted"></span>
       </div>

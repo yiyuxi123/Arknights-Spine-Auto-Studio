@@ -206,6 +206,10 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 }
 
 /* ---------- 芯片 ---------- */
+.chip.act { min-width: 120px; text-align: center; font-variant-numeric: tabular-nums; }
+.chip.act.idle { color: var(--ok); border-color: rgba(74, 222, 154, 0.35); background: rgba(74, 222, 154, 0.08); }
+.chip.act.busy { color: var(--accent); border-color: rgba(92, 179, 255, 0.45); background: rgba(92, 179, 255, 0.1); animation: act-pulse 1.6s ease-in-out infinite; }
+@keyframes act-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(92, 179, 255, 0.0); } 50% { box-shadow: 0 0 0 4px rgba(92, 179, 255, 0.12); } }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .chip-anim {
   font-family: var(--mono); font-size: 11px; color: var(--text);

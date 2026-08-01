@@ -201,6 +201,8 @@ export function upscalePng(pngBuffer, scale) {
  *   piece (with transparent padding), repack into a new page + atlas.
  *   Best quality with AI engines; slightly slower. Falls back to the
  *   whole-sheet path when the atlas has 9-slice regions or no regions.
+ * @param {number} [opts.sliceJobs]     parallel engine processes during slice
+ *   upscale (default 4) — saturates GPU/CPU instead of idling between pieces
  * @param {object|null} [opts.sr]      resolved SR engine handle (from sr.mjs)
  * @param {number} [opts.srScale]      engine's own scale; 0 = engine default
  * @param {number} [opts.srGpu]        engine GPU id (default 0)
@@ -218,6 +220,7 @@ export async function prepareUpscaledAssets({
   srGpu = 0,
   srTile = 0,
   slice = false,
+  sliceJobs = 6,
   onLog = () => {},
 }) {
   const atlasText = fs.readFileSync(atlasPath, 'utf8');
@@ -257,7 +260,9 @@ export async function prepareUpscaledAssets({
         outNameFor: (pageName, i) => (i === 0 ? srcName0 : pageName),
         scale,
         upscalePiece,
+        concurrency: sliceJobs,
         onLog,
+        onProgress: (p) => onLog('[slice] 放大进度 ' + p.done + '/' + p.total),
       });
       for (const pg of result.pages) {
         fs.writeFileSync(path.join(outDir, pg.name), pg.buffer);
@@ -357,6 +362,7 @@ export async function main(argv = process.argv.slice(2)) {
   --png PATH        源 PNG 贴图页（Lanczos3 放大；--sr 时改用 AI 超分引擎）
   --scale N         放大倍数（整数，默认 2）
   --slice           切片模式：按 atlas 逐片放大后重组（质量更佳，推荐）
+  --slice-jobs N    切片放大并发引擎进程数（默认 4，榨干 GPU/CPU）
   --out DIR         输出目录（默认与源文件同目录下的 <name>-hi/）
   --sr              使用 AI 超分引擎放大 PNG（默认 Real-ESRGAN anime6B）
   --sr-engine PATH  指定已下载的 ncnn-vulkan 引擎 exe 路径
@@ -384,6 +390,7 @@ export async function main(argv = process.argv.slice(2)) {
     sr: srHandle,
     srScale: parseInt(args['sr-scale'] || '0', 10) || 0,
     slice: !!args.slice,
+    sliceJobs: parseInt(args['slice-jobs'] || '6', 10) || 6,
     onLog: (m) => console.log(m),
   });
   console.log(`[done] 同步放大 x${scale} 完成:`);

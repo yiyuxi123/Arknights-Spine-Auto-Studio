@@ -17,6 +17,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+
+// Active engine processes (pid -> startedAt). The desktop server reads this
+// to show the user which workers are actually running right now.
+const activeEngines = new Map();
+export function getActiveEngines() {
+  const now = Date.now();
+  return [...activeEngines.entries()].map(([pid, startedAt]) => ({
+    pid,
+    startedAt,
+    elapsedMs: now - startedAt,
+  }));
+}
 import { inflateRawSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
@@ -336,15 +348,19 @@ function runEngine(exePath, args, timeoutMs) {
       resolve({ ok: false, error: e.message });
       return;
     }
+    const unregister = () => { try { if (child.pid != null) activeEngines.delete(child.pid); } catch {} };
+    activeEngines.set(child.pid, Date.now());
     child.stdout.on('data', (d) => { stdout += d.toString(); if (stdout.length > 2e6) stdout = stdout.slice(-2e6); });
     child.stderr.on('data', (d) => { stderr += d.toString(); if (stderr.length > 2e6) stderr = stderr.slice(-2e6); });
     child.on('error', (e) => {
+      unregister();
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       resolve({ ok: false, error: e.message });
     });
     child.on('close', (code) => {
+      unregister();
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -354,6 +370,7 @@ function runEngine(exePath, args, timeoutMs) {
 }
 function killTree(child) {
   if (!child || child.pid == null) return;
+  try { activeEngines.delete(child.pid); } catch {}
   try { child.kill(); } catch {}
   if (process.platform === 'win32') {
     try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch {}

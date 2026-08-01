@@ -1463,9 +1463,10 @@ $('#btn-hi').addEventListener('click', async () => {
     for (const m of targets) {
       $('#hi-info').textContent = '⚠️ 高清化 ' + (done + failed + 1) + '/' + targets.length + '：' + m.name + ' · ' + (m.viewLabel || m.base || '');
       const sliceOn = !!($('#h-slice') && $('#h-slice').checked);
+      const sliceJobs = $('#h-slice-jobs') ? $('#h-slice-jobs').value : '6';
       const { jobId } = await api('/api/upscale', {
         atlas: m.files.atlas, png: m.files.png,
-        scale, sr: srOn, srEngine, slice: sliceOn,
+        scale, sr: srOn, srEngine, slice: sliceOn, sliceJobs,
         outName: m.name,
       });
       state.activeJob = jobId;
@@ -1695,6 +1696,35 @@ function escapeHtml(s) {
 // ---------------------------------------------------------------------------
 // 启动
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 实时活动状态条（当前任务 + 正在运行的引擎进程）
+// ---------------------------------------------------------------------------
+const ACT_KIND = { upscale: '高清化', run: '动画生成', preview: '动作预览', fetch: '拉取模型', compare: '方案对比', plan: '时间轴编排', label: '动作打标', enrich: '资料补全', resolve: '解析', inspect: '检查' };
+async function pollActivity() {
+  try {
+    const data = await api('/api/activity');
+    const chip = $('#act');
+    if (!chip) return;
+    if (!data.job) {
+      chip.textContent = '● 空闲';
+      chip.className = 'chip act idle';
+      chip.title = '当前无处理任务';
+      return;
+    }
+    const kind = ACT_KIND[data.job.kind] || data.job.kind;
+    let text = '● ' + kind + ' ' + data.job.elapsedSec + 's';
+    if (data.engines && data.engines.length) {
+      const pids = data.engines.map((e) => e.pid).join('/');
+      const maxSec = Math.max(...data.engines.map((e) => e.elapsedSec || 0));
+      text += ' · 引擎 ×' + data.engines.length + ' (' + pids + ') ' + maxSec + 's';
+    }
+    chip.textContent = text;
+    chip.className = 'chip act busy';
+    chip.title = (data.job.lastLogs || []).join('\n') || '任务进行中';
+  } catch { /* 服务暂不可达时保持原样 */ }
+}
+setInterval(pollActivity, 1500);
+
 (async function init() {
   connectSse();
   await refreshState();

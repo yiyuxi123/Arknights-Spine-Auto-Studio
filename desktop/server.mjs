@@ -17,6 +17,7 @@ import { resolveModelRef, fetchCharacterFromPrts, fetchAllViewsFromPrts, enemyIn
 import { alignAssetsInPlace } from '../src/align.mjs';
 import { PerfMonitor } from '../src/perf.mjs';
 import { rmrfRetry } from '../src/cdp.mjs';
+import { getActiveEngines } from '../src/sr.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.dirname(here);
@@ -136,6 +137,7 @@ function broadcast(type, data) {
 let queue = Promise.resolve();
 let jobSeq = 0;
 const jobs = new Map();
+let currentJob = null; // running job summary for /api/activity
 
 function enqueue(kind, fn) {
   const id = `job-${++jobSeq}`;
@@ -144,6 +146,7 @@ function enqueue(kind, fn) {
   queue = queue
     .then(async () => {
       job.status = 'running';
+      currentJob = { id, kind, startedAt: Date.now() };
       broadcast('status', { jobId: id, status: 'running' });
       const origLog = console.log;
       const origErr = console.error;
@@ -173,6 +176,7 @@ function enqueue(kind, fn) {
         emit(`[error] ${err?.stack || err}`);
         broadcast('error', { jobId: id, message: String(err?.message || err) });
       } finally {
+        if (currentJob && currentJob.id === id) currentJob = null;
         console.log = origLog;
         console.error = origErr;
       }
@@ -445,6 +449,22 @@ function modelFromKey(key) {
 // ---------------------------------------------------------------------------
 async function handleApi(req, res, url) {
   const { pathname } = url;
+  if (req.method === 'GET' && pathname === '/api/activity') {
+    const now = Date.now();
+    const engines = getActiveEngines().map((e) => ({ pid: e.pid, elapsedSec: Math.round(e.elapsedMs / 1000) }));
+    let job = null;
+    if (currentJob) {
+      const j = jobs.get(currentJob.id);
+      job = {
+        id: currentJob.id,
+        kind: currentJob.kind,
+        status: j ? j.status : 'running',
+        elapsedSec: Math.round((now - currentJob.startedAt) / 1000),
+        lastLogs: j ? j.logs.slice(-3) : [],
+      };
+    }
+    return sendJson(res, 200, { ok: true, job, engines });
+  }
   if (req.method === 'GET' && pathname === '/api/perf') {
     sendJson(res, 200, { ok: true, sample: perfMonitor.cached });
     return;
@@ -837,6 +857,7 @@ async function handleApi(req, res, url) {
     }
     const argv = ['upscale', '--atlas', atlas, '--png', png, '--scale', String(body.scale || '2')];
     if (body.slice) argv.push('--slice');
+    if (body.sliceJobs) argv.push('--slice-jobs', String(Math.max(1, Math.min(16, parseInt(body.sliceJobs, 10) || 6))));
     if (body.sr) argv.push('--sr');
     if (body.srEngine) argv.push('--sr-engine', String(body.srEngine));
     const outTag = `${safeName(body.outName || 'hi')}-${Date.now()}`;

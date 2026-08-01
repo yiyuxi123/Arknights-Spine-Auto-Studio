@@ -108,8 +108,12 @@ export function launchChrome({ chromePath = findChrome(), userDataDir, width = 8
     '--disable-background-networking',
     '--disable-component-update',
     '--mute-audio',
-    '--enable-unsafe-swiftshader',
-    '--use-angle=swiftshader',
+    // Default: use the real GPU (headless Chrome falls back to SwiftShader
+    // software rendering automatically when no GPU is available). Set
+    // ZDXR_SWIFTSHADER=1 to force software rendering as a workaround.
+    ...(process.env.ZDXR_SWIFTSHADER === '1'
+      ? ['--enable-unsafe-swiftshader', '--use-angle=swiftshader']
+      : ['--ignore-gpu-blocklist', '--enable-gpu', '--enable-unsafe-swiftshader']),
     '--force-device-scale-factor=1',
     '--hide-scrollbars',
     `--window-size=${width},${height}`,

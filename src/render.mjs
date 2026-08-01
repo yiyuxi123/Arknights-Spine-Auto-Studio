@@ -56,6 +56,9 @@ export async function renderTimelineToGif({
     if (!load || !load.ok) {
       throw new Error('studio.load failed: ' + (load && load.error));
     }
+    const gpuInfo = String(await evalJs(send, "(function(){try{var c=document.createElement('canvas');var gl=c.getContext('webgl')||c.getContext('experimental-webgl');if(!gl)return 'no-webgl';var ext=gl.getExtension('WEBGL_debug_renderer_info');var name=ext?String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)):'webgl';return /swiftshader|llvmpipe|software/i.test(name)?name+' (software)':name+' (gpu)';}catch(e){return 'webgl-error'}})()"));
+    const gpuTag = gpuInfo.includes('(software)') ? gpuInfo.replace(' (software)', '') + '（软件渲染，设置 ZDXR_SWIFTSHADER=1 可强制）' : gpuInfo.replace(' (gpu)', '') + '（GPU 加速）';
+    console.log('[render] 渲染后端: ' + gpuTag);
 
     const segments = timeline.timeline;
     const segDuration = (seg) => (seg.duration || 0) * Math.max(1, parseInt(seg.repeat, 10) || 1);

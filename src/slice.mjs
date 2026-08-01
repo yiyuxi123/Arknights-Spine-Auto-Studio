@@ -182,17 +182,20 @@ export function packShelf(items, { gap = 2, maxW = MAX_SHEET } = {}) {
  * @param {string} [opts.rotateDir]     de-rotation direction for rotate:true
  *   regions: 'ccw' (default) or 'cw' (also via env SLICE_ROT_DIR)
  * @param {number} [opts.gap]           gap between pieces in output pixels (default 2)
+ * @param {number} [opts.concurrency]   how many pieces are upscaled in parallel (default 1)
  * @param {(m: string) => void} [opts.onLog]
+ * @param {(p: {done: number, total: number}) => void} [opts.onProgress]  per-piece progress
  * @returns {Promise<{png: Buffer, width: number, height: number, slots: Array<object>}>}
  */
-export async function slicePage({ rgba, pageW, pageH, regions, scale, upscalePiece, pad = 4, gap = 2, rotateDir, onLog = () => {} }) {
+export async function slicePage({ rgba, pageW, pageH, regions, scale, upscalePiece, pad = 4, gap = 2, rotateDir, concurrency = 1, onLog = () => {}, onProgress = null }) {
   if (!regions.length) throw new Error('page has no regions');
-  const items = [];
+  // Phase 1: crop / de-rotate / pad each region (cheap, synchronous)
+  const jobs = [];
   for (const r of regions) {
     const [x, y] = r.xy;
     const [w, h] = r.size;
     if (w <= 0 || h <= 0) continue;
-    // Spine 3.8: rotate:true 时，atlas size 是正立尺寸 (w x h)，纹理中存储的
+    // Spine 3.8: rotate:true 时，atlas size 是正立尺寸(w x h)，纹理中存储的
     // 是旋转 90° 的矩形，宽度 = h、高度 = w（见 spine-player TextureAtlas.load）
     const cropW = r.rotate ? h : w;
     const cropH = r.rotate ? w : h;
@@ -221,36 +224,63 @@ export async function slicePage({ rgba, pageW, pageH, regions, scale, upscalePie
       const src = yy * pw * 4;
       piece.copy(padded, ((yy + pad) * fullW + pad) * 4, src, src + pw * 4);
     }
-    const targetW = Math.max(1, Math.round(fullW * scale));
-    const targetH = Math.max(1, Math.round(fullH * scale));
-    let up;
-    try {
-      up = await upscalePiece(padded, fullW, fullH, targetW, targetH);
-      if (up.length !== targetW * targetH * 4) throw new Error('wrong output size');
-    } catch (e) {
-      onLog('[slice] ' + r.name + ' 单片放大失败，跳过该片: ' + (e && e.message || e));
-      continue;
-    }
-    const px = Math.round(pad * scale);
-    const tw = Math.max(1, Math.round(pw * scale));
-    const th = Math.max(1, Math.round(ph * scale));
-    const inner = Buffer.alloc(tw * th * 4);
-    for (let yy = 0; yy < th; yy++) {
-      const src = ((yy + px) * targetW + px) * 4;
-      up.copy(inner, yy * tw * 4, src, src + tw * 4);
-    }
-    items.push({
+    jobs.push({
       name: r.name,
-      w: tw,
-      h: th,
-      rgba: inner,
+      padded,
+      fullW,
+      fullH,
+      targetW: Math.max(1, Math.round(fullW * scale)),
+      targetH: Math.max(1, Math.round(fullH * scale)),
+      scale,
+      pad,
       orig: r.orig ? r.orig.map((v) => Math.round(v * scale)) : null,
       offset: r.offset ? r.offset.map((v) => Math.round(v * scale)) : null,
       index: r.index,
       attrs: r.attrs,
     });
   }
-  if (!items.length) throw new Error('no usable regions');
+  if (!jobs.length) throw new Error('no usable regions');
+  // Phase 2: upscale pieces concurrently — several engine processes run at
+  // once so the GPU/CPU stays busy instead of idling between tiny pieces.
+  const total = jobs.length;
+  let done = 0;
+  const items = [];
+  const report = () => {
+    if (onProgress) onProgress({ done, total });
+    else onLog('[slice] 放大进度 ' + done + '/' + total);
+  };
+  const workOne = async (job) => {
+    let up;
+    try {
+      up = await upscalePiece(job.padded, job.fullW, job.fullH, job.targetW, job.targetH);
+      if (up.length !== job.targetW * job.targetH * 4) throw new Error('wrong output size');
+    } catch (e) {
+      onLog('[slice] ' + job.name + ' 单片放大失败，跳过该片: ' + (e && e.message || e));
+      return;
+    }
+    const px = Math.round(job.pad * job.scale);
+    const tw = Math.max(1, Math.round((job.fullW - job.pad * 2) * job.scale));
+    const th = Math.max(1, Math.round((job.fullH - job.pad * 2) * job.scale));
+    const inner = Buffer.alloc(tw * th * 4);
+    for (let yy = 0; yy < th; yy++) {
+      const src = ((yy + px) * job.targetW + px) * 4;
+      up.copy(inner, yy * tw * 4, src, src + tw * 4);
+    }
+    items.push({ name: job.name, w: tw, h: th, rgba: inner, orig: job.orig, offset: job.offset, index: job.index, attrs: job.attrs });
+    done += 1;
+    report();
+  };
+  const pool = Math.max(1, Math.min(concurrency || 1, jobs.length));
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < jobs.length) {
+      const job = jobs[cursor++];
+      await workOne(job);
+    }
+  };
+  await Promise.all(Array.from({ length: pool }, worker));
+  if (!items.length) throw new Error('all pieces failed');
+  // Phase 3: pack
   const packed = packShelf(items, { gap });
   const sheet = Buffer.alloc(packed.width * packed.height * 4);
   const byName = new Map(items.map((it) => [it.name, it]));
@@ -310,7 +340,7 @@ export function buildAtlasText({ pageName, width, height, format, filter, repeat
  * @param {(m: string) => void} [opts.onLog]
  * @returns {Promise<{atlasText: string, pages: Array<{name: string, buffer: Buffer}>}>}
  */
-export async function sliceAtlas({ atlasText, readPage, outNameFor, scale, upscalePiece, pad = 4, gap = 2, rotateDir, onLog = () => {} }) {
+export async function sliceAtlas({ atlasText, readPage, outNameFor, scale, upscalePiece, pad = 4, gap = 2, rotateDir, concurrency = 1, onLog = () => {}, onProgress = null }) {
   const { pages, regions } = parseAtlasRegions(atlasText);
   if (!pages.length || !regions.length) throw new Error('atlas 无可解析的页面/区域');
   const nineSlice = regions.find((r) => r.split || r.pad);
@@ -324,7 +354,7 @@ export async function sliceAtlas({ atlasText, readPage, outNameFor, scale, upsca
     const buf = readPage(pg.name);
     const { width, height, rgba } = decodePng(buf);
     const { png, width: outW, height: outH, slots } = await slicePage({
-      rgba, pageW: width, pageH: height, regions: own, scale, upscalePiece, pad, gap, rotateDir, onLog,
+      rgba, pageW: width, pageH: height, regions: own, scale, upscalePiece, pad, gap, rotateDir, concurrency, onLog, onProgress,
     });
     const outName = outNameFor(pg.name, pageIdx);
     pageIdx += 1;
