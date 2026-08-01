@@ -208,24 +208,48 @@ export async function renderTimelineToGif(opts) {
   const pool = new GifWorkerPool(Math.max(2, Math.min(8, (os.cpus?.() || [1, 2, 3, 4]).length - 1)));
   const delay = Math.max(1, Math.round(100 / fps));
   let palette = null;
-  const encoded = [];
   const userOnFrame = opts.onFrame;
+  // Backpressured streaming GIF writer: at most MAX_INFLIGHT encodes are in
+  // flight (bounded memory), finished frames are written to disk in order.
+  const MAX_INFLIGHT = 256; // compressed frames are small (~0.25MB); a wide window keeps render/encode overlapped
+  const inFlight = new Map(); // 1-based frame idx -> encode promise
+  let nextToWrite = 1;
+  let headerWritten = false;
+  const writeStream = fs.createWriteStream(opts.outFile);
+  const streamError = new Promise((resolve) => writeStream.on('error', resolve));
+  const writeChunk = (buf) => new Promise((resolve) => {
+    if (!writeStream.write(buf)) writeStream.once('drain', resolve);
+    else resolve();
+  });
+  const flush = async () => {
+    while (inFlight.has(nextToWrite)) {
+      const compressed = await inFlight.get(nextToWrite);
+      inFlight.delete(nextToWrite);
+      if (!headerWritten) {
+        await writeChunk(buildGifHeader(width, height, palette));
+        headerWritten = true;
+      }
+      await writeChunk(buildGifFrame(compressed, width, height, delay));
+      nextToWrite++;
+    }
+  };
   const result = await renderTimelineFrames({
     ...opts,
     onFrame: async (rgba, idx, total, action) => {
-      // frames arrive in order; submit every frame to the worker pool without
-      // awaiting so all workers stay busy (awaiting serializes the pool)
+      // frames arrive in order; submit without awaiting so all workers stay
+      // busy, but cap the in-flight window for bounded memory
       if (!palette) palette = medianCut(rgba, width, height, 256);
-      encoded[idx - 1] = pool.encode(rgba, width, height, palette);
+      inFlight.set(idx, pool.encode(rgba, width, height, palette));
+      await flush();
+      while (inFlight.size > MAX_INFLIGHT) await flush();
       if (userOnFrame) await userOnFrame(idx, total, action);
     },
   });
+  await flush();
+  await writeChunk(gifTrailer());
+  await new Promise((resolve) => writeStream.end(resolve));
   pool.close();
-  const comps = await Promise.all(encoded);
-  const chunks = [buildGifHeader(width, height, palette)];
-  for (const c of comps) chunks.push(buildGifFrame(c, width, height, delay));
-  chunks.push(gifTrailer());
-  const gif = Buffer.concat(chunks);
-  fs.writeFileSync(opts.outFile, gif);
-  return { frames: result.frames, seconds: result.seconds, fps, outFile: opts.outFile, bytes: gif.length };
+  const err = await Promise.race([streamError, Promise.resolve(null)]);
+  if (err) throw err;
+  return { frames: result.frames, seconds: result.seconds, fps, outFile: opts.outFile, bytes: fs.statSync(opts.outFile).size };
 }
