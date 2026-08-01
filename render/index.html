@@ -102,24 +102,27 @@
 
   function samplePoseAndCollectBounds(v) {
     var union = null;
-    function add(b) {
+    var perAction = {};
+    function add(b, target) {
       if (!b || !isFinite(b.minX)) return;
-      if (!union) union = { minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY };
+      if (!target) target = union;
+      if (!target) union = { minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: b.maxY };
       else {
-        union.minX = Math.min(union.minX, b.minX);
-        union.minY = Math.min(union.minY, b.minY);
-        union.maxX = Math.max(union.maxX, b.maxX);
-        union.maxY = Math.max(union.maxY, b.maxY);
+        target.minX = Math.min(target.minX, b.minX);
+        target.minY = Math.min(target.minY, b.minY);
+        target.maxX = Math.max(target.maxX, b.maxX);
+        target.maxY = Math.max(target.maxY, b.maxY);
       }
     }
     v.skeleton.setToSetupPose();
     v.skeleton.updateWorldTransform();
-    add(collectBounds(v.skeleton));
+    add(collectBounds(v.skeleton), null);
     var anims = v.skeletonData.animations;
     for (var i = 0; i < anims.length; i++) {
       var anim = anims[i];
       if (anim.duration <= 0) continue;
       if (cfg.actions && cfg.actions.indexOf(anim.name) < 0) continue;
+      perAction[anim.name] = null;
       // sample 12 poses across the animation so large-amplitude moves
       // (e.g. wide arm swings) are included in the auto-fit bounds; sparse
       // sampling makes the character look small and the export blurry
@@ -132,10 +135,14 @@
         v.state.update(Math.max(0.0001, times[t]));
         v.state.apply(v.skeleton);
         v.skeleton.updateWorldTransform();
-        add(collectBounds(v.skeleton));
+        var bb = collectBounds(v.skeleton);
+        add(bb, null);
+        var pc = perAction[anim.name];
+        if (!pc) { perAction[anim.name] = { minX: bb.minX, minY: bb.minY, maxX: bb.maxX, maxY: bb.maxY }; }
+        else { pc.minX = Math.min(pc.minX, bb.minX); pc.minY = Math.min(pc.minY, bb.minY); pc.maxX = Math.max(pc.maxX, bb.maxX); pc.maxY = Math.max(pc.maxY, bb.maxY); }
       }
     }
-    return union || { minX: -100, minY: -100, maxX: 100, maxY: 100 };
+    return { union: union || { minX: -100, minY: -100, maxX: 100, maxY: 100 }, perAction: perAction };
   }
 
   function fitCamera() {
@@ -147,6 +154,45 @@
     scene.camera.zoom = 1 / scale;
     scene.camera.position.x = unionBounds.minX + bw / 2;
     scene.camera.position.y = unionBounds.minY + bh / 2;
+    scene.camera.update();
+  }
+
+  function cameraForBounds(b) {
+    var bw = b.maxX - b.minX;
+    var bh = b.maxY - b.minY;
+    if (bw <= 0 || bh <= 0) { bw = Math.max(bw, 1); bh = Math.max(bh, 1); }
+    var scale = Math.min(cfg.width / bw, cfg.height / bh) * cfg.fit;
+    return { zoom: 1 / scale, x: b.minX + bw / 2, y: b.minY + bh / 2 };
+  }
+
+  // Per-action dynamic camera: every frame the camera zooms/pans to the
+  // bounds of the action currently playing, so the character stays as large
+  // as possible even when an action sweeps across half the screen. During
+  // action mixes the camera interpolates smoothly (no jumps).
+  function applyDynamicCamera(v) {
+    var animName = v._lastAction || (v.skeletonData.animations.length ? v.skeletonData.animations[0].name : null);
+    var b = (v.perAction && v.perAction[animName]) || v.boundsInfo.union;
+    if (!b) return;
+    var to = cameraForBounds(b);
+    var from = v._camFrom;
+    var t = 1;
+    if (v._camAction !== animName) {
+      v._camFrom = v._camFrom || { zoom: to.zoom, x: to.x, y: to.y };
+      from = v._camFrom;
+      var tr = v.state.tracks && v.state.tracks.length ? v.state.tracks[0] : null;
+      var mixDur = (tr && tr.mixDuration > 0) ? tr.mixDuration : 0.2;
+      var mixT = (tr && typeof tr.mixTime === 'number') ? Math.min(1, tr.mixTime / mixDur) : 1;
+      t = Math.max(0, Math.min(1, mixT));
+      if (t >= 1) { v._camFrom = null; v._camAction = animName; }
+    } else {
+      v._camAction = animName;
+    }
+    var z = from ? from.zoom + (to.zoom - from.zoom) * t : to.zoom;
+    var px = from ? from.x + (to.x - from.x) * t : to.x;
+    var py = from ? from.y + (to.y - from.y) * t : to.y;
+    scene.camera.zoom = z;
+    scene.camera.position.x = px;
+    scene.camera.position.y = py;
     scene.camera.update();
   }
 
@@ -202,8 +248,9 @@
     var stateData = new spine.AnimationStateData(skeletonData);
     stateData.defaultMix = cfg.mix;
     var state = new spine.AnimationState(stateData);
-    var v = { key: key, skeletonData: skeletonData, skeleton: skeleton, state: state, boundsInfo: null, animations: [] };
+    var v = { key: key, skeletonData: skeletonData, skeleton: skeleton, state: state, boundsInfo: null, animations: [], perAction: null, _camFrom: null, _camAction: null };
     v.boundsInfo = samplePoseAndCollectBounds(v);
+    v.perAction = v.boundsInfo.perAction;
     v.animations = skeletonData.animations.map(function (a) { return { name: a.name, duration: a.duration }; });
     return v;
   }
@@ -219,7 +266,7 @@
         for (var i = 0; i < cfg.views.length; i++) {
           var v = await loadOne(cfg.views[i]);
           views.push(v);
-          if (!unionBounds) unionBounds = v.boundsInfo;
+          if (!unionBounds) unionBounds = v.boundsInfo.union;
           else {
             unionBounds.minX = Math.min(unionBounds.minX, v.boundsInfo.minX);
             unionBounds.minY = Math.min(unionBounds.minY, v.boundsInfo.minY);
@@ -261,6 +308,7 @@
       target.state.update(delta);
       target.state.apply(target.skeleton);
       target.skeleton.updateWorldTransform();
+      applyDynamicCamera(target);
       draw();
       return { ok: true, view: target.key, action: currentView._lastAction, fallback: requested !== currentView._lastAction };
     },
