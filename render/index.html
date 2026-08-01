@@ -296,6 +296,16 @@
       r.dataUrl = this.snapshot();
       return r;
     },
+    stepMany(params) {
+      // advance through a list of step params without rendering snapshots
+      if (!ready) throw new Error('studio not ready');
+      var list = params && params.frames || [];
+      for (var i = 0; i < list.length; i++) {
+        var r = this.step(list[i]);
+        if (!r || !r.ok) return { ok: false, error: 'step failed at ' + i };
+      }
+      return { ok: true };
+    },
     async renderFrames(params) {
       // Render a batch of frames and POST the raw premultiplied RGBA bytes to
       // the local frame server (zero base64/JSON overhead). One round-trip

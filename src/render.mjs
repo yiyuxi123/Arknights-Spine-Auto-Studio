@@ -13,8 +13,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Shared timeline renderer: segments the timeline into parallel chunks, each
 // chunk gets its own page session (own renderer process), frames travel as
 // raw premultiplied RGBA over a local POST channel (zero base64/JSON) and are
-// straightened (flip + un-premultiply) on the GIF worker pool before the
-// onFrame callback. GIF / PNG-frame / MP4 pipelines all build on this.
+// onFrame receives raw premultiplied RGBA (bottom-left origin). GIF pipeline
+// straightens inside its single worker call; PNG/MP4 pipelines straighten on
+// their side. GIF / PNG-frame / MP4 pipelines all build on this.
 // ---------------------------------------------------------------------------
 export async function renderTimelineFrames({
   rootDir,
@@ -109,6 +110,20 @@ export async function renderTimelineFrames({
       batchWaiters.set(id, resolve);
     });
 
+    // Parallel chunks finish in arbitrary order: buffer frames and hand them
+    // to onFrame strictly by frame number so GIF/MP4/PNG stay in order.
+    let nextFrame = 0;
+    const pendingFrames = new Map();
+    const deliver = async () => {
+      while (pendingFrames.has(nextFrame)) {
+        const raw = pendingFrames.get(nextFrame);
+        pendingFrames.delete(nextFrame);
+        const st = segStateAt(nextFrame / fps);
+        await onFrame(raw, nextFrame + 1, frameCount, (st.seg || {}).action);
+        nextFrame++;
+      }
+    };
+
     async function renderRange(send2, fromFrame, toFrame) {
       const params = [];
       for (let f = fromFrame; f < toFrame; f++) {
@@ -123,15 +138,18 @@ export async function renderTimelineFrames({
         if (!res || !res.ok) throw new Error('renderFrames failed: ' + (res && res.error || 'unknown'));
         if (res.fallback) console.warn('  [warn] 动作不存在，已替换为 ' + res.action);
         const frames = await waitBatch(id, batch.length);
-        const straight = await Promise.all(frames.map((raw) => pool.straightenOnly(raw, width, height)));
-        for (let i = 0; i < straight.length; i++) {
-          const f = fromFrame + b + i;
-          await onFrame(straight[i], f + 1, frameCount, (segStateAt(f / fps).seg || {}).action);
+        for (let i = 0; i < frames.length; i++) {
+          pendingFrames.set(fromFrame + b + i, frames[i]);
         }
+        await deliver();
       }
     }
 
-    const chunkCount = Math.max(1, Math.min(parseInt(process.env.ZDXR_RENDER_CHUNKS || '4', 10) || 4, frameCount === 1 ? 1 : Math.floor(frameCount / 30) || 1));
+    // adaptive chunking: parallel pages pay a fixed load cost, so short
+    // renders use fewer chunks (env ZDXR_RENDER_CHUNKS overrides)
+    const envChunks = parseInt(process.env.ZDXR_RENDER_CHUNKS || '0', 10) || 0;
+    const autoChunks = frameCount < 60 ? 1 : frameCount < 180 ? 2 : frameCount < 360 ? 3 : 4;
+    const chunkCount = Math.max(1, Math.min(envChunks || autoChunks, frameCount === 1 ? 1 : Math.ceil(frameCount / 15)));
     const perChunk = Math.ceil(frameCount / chunkCount);
     const chunks2 = [];
     for (let c = 0; c < chunkCount; c++) {
@@ -151,20 +169,26 @@ export async function renderTimelineFrames({
         const res0 = await evalJs(send2, 'studio.renderFrames(' + JSON.stringify({ batch: id0, frames: [{ action: st0.seg.action, view: st0.seg.view || 'default', loop: st0.seg.loop, delta: 0, timeScale: st0.seg.timeScale || 1, restart: true }] }) + ')');
         if (!res0 || !res0.ok) throw new Error('frame0 failed: ' + (res0 && res0.error || 'unknown'));
         const f0 = (await waitBatch(id0, 1))[0];
-        const s0 = await pool.straightenOnly(f0, width, height);
-        await onFrame(s0, 1, frameCount, st0.seg.action);
+        pendingFrames.set(0, f0);
+        await deliver();
         await renderRange(send2, 1, to);
       } else {
-        // advance state to (from-1)/fps so the first stepped frame lands on from/fps
-        const targetT = Math.max(0, (from - 1) / fps);
-        const st = segStateAt(targetT);
-        const segStartT = (() => { let acc = 0, i = 0; while (i < st.segIndex) { acc += segDuration(segments[i]); i++; } return acc; })();
-        const offset = Math.max(0, targetT - segStartT);
-        await evalJs(send2, 'studio.step(' + JSON.stringify({ action: st.seg.action, view: st.seg.view || 'default', loop: st.seg.loop, delta: offset, timeScale: st.seg.timeScale || 1, restart: true }) + ')');
+        // Replay every step from t=0 (no snapshots) so animation switches,
+        // mix transitions and loop cycles build exactly like a single-chunk
+        // run. A big-delta jump would skip the mix source track and shift
+        // poses around chunk boundaries.
+        const endFrame = Math.max(0, Math.floor(((from - 1) / fps) * fps + 1e-9));
+        const advanceParams = [];
+        for (let f = 0; f <= endFrame; f++) {
+          const st = segStateAt(f / fps);
+          advanceParams.push({ action: st.seg.action, view: st.seg.view || 'default', loop: st.seg.loop, delta: 1 / fps, timeScale: st.seg.timeScale || 1, restart: false });
+        }
+        await evalJs(send2, 'studio.stepMany(' + JSON.stringify({ frames: advanceParams }) + ')');
         await renderRange(send2, from, to);
       }
     };
     await Promise.all(chunks2.map(runChunk));
+    await deliver();
     pool.close();
     return { frames: frameCount, seconds: total, fps };
   } finally {
@@ -189,14 +213,17 @@ export async function renderTimelineToGif(opts) {
   const result = await renderTimelineFrames({
     ...opts,
     onFrame: async (rgba, idx, total, action) => {
+      // frames arrive in order; submit every frame to the worker pool without
+      // awaiting so all workers stay busy (awaiting serializes the pool)
       if (!palette) palette = medianCut(rgba, width, height, 256);
-      encoded.push(await pool.encode(rgba, width, height, palette, { straight: false }));
+      encoded[idx - 1] = pool.encode(rgba, width, height, palette);
       if (userOnFrame) await userOnFrame(idx, total, action);
     },
   });
   pool.close();
+  const comps = await Promise.all(encoded);
   const chunks = [buildGifHeader(width, height, palette)];
-  for (const c of encoded) chunks.push(buildGifFrame(c, width, height, delay));
+  for (const c of comps) chunks.push(buildGifFrame(c, width, height, delay));
   chunks.push(gifTrailer());
   const gif = Buffer.concat(chunks);
   fs.writeFileSync(opts.outFile, gif);

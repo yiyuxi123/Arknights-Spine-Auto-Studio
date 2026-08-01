@@ -410,7 +410,7 @@ async function cmdRun(args) {
         if (!version) throw new Error(`--ffmpeg 指定的程序无法运行: ${args.ffmpeg}`);
         ffmpeg = { path: path.resolve(args.ffmpeg), version };
       } else {
-        console.log('[ffmpeg] 未检测到系统 FFmpeg，准备下载静态版（约 81MB）...');
+        console.log('[ffmpeg] 使用内置/系统 FFmpeg（未找到时自动下载静态版，约 81MB）...');
         let lastPct = 0;
         ffmpeg = await ensureFfmpeg({
           onProgress: (received, total) => {
@@ -471,9 +471,13 @@ async function cmdRun(args) {
 // RGBA for every frame.
 import { renderTimelineFrames } from './render.mjs';
 async function renderFramesToPng({ rootDir, assets, assetsList, timeline, width, height, fps, background = '00000000', mix = 0.2, chromePath, onFrame }) {
+  const { straightenRgba } = await import('./gif.mjs');
   return renderTimelineFrames({
     rootDir, assets, assetsList, timeline, width, height, fps, background, mix, chromePath,
-    onFrame: async (rgba, idx, n, action) => { await onFrame(rgba, idx, n, action); },
+    // frames arrive premultiplied (WebGL readPixels); PNG/MP4 need straight alpha
+    onFrame: async (rgba, idx, n, action) => {
+      await onFrame(straightenRgba(rgba, width, height), idx, n, action);
+    },
   });
 }
 
