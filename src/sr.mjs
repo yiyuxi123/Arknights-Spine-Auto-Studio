@@ -16,7 +16,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { inflateRawSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
@@ -302,10 +302,9 @@ export async function resolveEngine(spec = null, { force = false, onLog = () => 
         args.push('-m', modelsDir, '-n', model);
       }
       try {
-        const res = spawnSync(exePath, args, { timeout: 900000, encoding: 'utf8', windowsHide: true });
-        if (res.status !== 0 || !fs.existsSync(outputFile) || fs.statSync(outputFile).size === 0) {
-          const err = (res.stderr || '').trim() || (res.stdout || '').trim() || `exit code ${res.status}`;
-          return { ok: false, error: err.slice(0, 400) };
+        const res = await runEngine(exePath, args, 180000);
+        if (!res.ok || !fs.existsSync(outputFile) || fs.statSync(outputFile).size === 0) {
+          return { ok: false, error: (res.error || 'engine produced no output').slice(0, 400) };
         }
         return { ok: true, output: fs.readFileSync(outputFile) };
       } finally {
@@ -313,6 +312,52 @@ export async function resolveEngine(spec = null, { force = false, onLog = () => 
       }
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// async engine runner
+// ---------------------------------------------------------------------------
+// Never blocks the event loop: a stuck GPU call must not freeze the whole
+// server. On timeout the entire process tree is killed.
+function runEngine(exePath, args, timeoutMs) {
+  return new Promise((resolve) => {
+    let stdout = '', stderr = '', settled = false;
+    let child = null;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      killTree(child);
+      resolve({ ok: false, error: 'engine timed out after ' + Math.round(timeoutMs / 1000) + 's' });
+    }, timeoutMs);
+    try {
+      child = spawn(exePath, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      clearTimeout(timer);
+      resolve({ ok: false, error: e.message });
+      return;
+    }
+    child.stdout.on('data', (d) => { stdout += d.toString(); if (stdout.length > 2e6) stdout = stdout.slice(-2e6); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); if (stderr.length > 2e6) stderr = stderr.slice(-2e6); });
+    child.on('error', (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok: false, error: e.message });
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok: code === 0, error: (stderr || stdout).trim().slice(0, 400), code });
+    });
+  });
+}
+function killTree(child) {
+  if (!child || child.pid == null) return;
+  try { child.kill(); } catch {}
+  if (process.platform === 'win32') {
+    try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch {}
+  }
 }
 
 // ---------------------------------------------------------------------------

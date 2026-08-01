@@ -85,7 +85,18 @@ app.whenReady().then(async () => {
   });
 });
 
+function killServerTree() {
+  if (!serverChild || serverChild.pid == null) return;
+  try { serverChild.kill(); } catch {}
+  if (process.platform === 'win32') {
+    // kill the whole tree so orphaned render/upscale engines cannot linger
+    try { spawn('taskkill', ['/PID', String(serverChild.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch {}
+  }
+}
 app.on('window-all-closed', () => {
-  if (serverChild) { try { serverChild.kill(); } catch {} }
+  killServerTree();
   app.quit();
+});
+app.on('before-quit', () => {
+  killServerTree();
 });

@@ -223,9 +223,13 @@ export async function slicePage({ rgba, pageW, pageH, regions, scale, upscalePie
     }
     const targetW = Math.max(1, Math.round(fullW * scale));
     const targetH = Math.max(1, Math.round(fullH * scale));
-    const up = await upscalePiece(padded, fullW, fullH, targetW, targetH);
-    if (up.length !== targetW * targetH * 4) {
-      throw new Error('upscalePiece returned wrong size for ' + r.name);
+    let up;
+    try {
+      up = await upscalePiece(padded, fullW, fullH, targetW, targetH);
+      if (up.length !== targetW * targetH * 4) throw new Error('wrong output size');
+    } catch (e) {
+      onLog('[slice] ' + r.name + ' 单片放大失败，跳过该片: ' + (e && e.message || e));
+      continue;
     }
     const px = Math.round(pad * scale);
     const tw = Math.max(1, Math.round(pw * scale));
