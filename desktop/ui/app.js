@@ -67,6 +67,7 @@ function connectSse() {
   });
   es.addEventListener('log', (e) => {
     const { jobId, line } = JSON.parse(e.data);
+    scheduleActivityRefresh();
     if (!jobLogs.has(jobId)) jobLogs.set(jobId, []);
     jobLogs.get(jobId).push(line);
     if (jobLogs.get(jobId).length > 800) jobLogs.get(jobId).splice(0, jobLogs.get(jobId).length - 800);
@@ -1700,6 +1701,15 @@ function escapeHtml(s) {
 // 实时活动状态条（当前任务 + 正在运行的引擎进程）
 // ---------------------------------------------------------------------------
 const ACT_KIND = { upscale: '高清化', run: '动画生成', preview: '动作预览', fetch: '拉取模型', compare: '方案对比', plan: '时间轴编排', label: '动作打标', enrich: '资料补全', resolve: '解析', inspect: '检查' };
+const actEngines = new Map(); // pid -> { el }
+let actRefreshTimer = null;
+let actHover = false;
+
+function scheduleActivityRefresh() {
+  if (actRefreshTimer) return;
+  actRefreshTimer = setTimeout(() => { actRefreshTimer = null; pollActivity(); }, 400);
+}
+
 async function pollActivity() {
   try {
     const data = await api('/api/activity');
@@ -1709,21 +1719,55 @@ async function pollActivity() {
       chip.textContent = '● 空闲';
       chip.className = 'chip act idle';
       chip.title = '当前无处理任务';
+      renderActEngines([]);
+      if ($('#act-log')) $('#act-log').textContent = '';
       return;
     }
     const kind = ACT_KIND[data.job.kind] || data.job.kind;
-    let text = '● ' + kind + ' ' + data.job.elapsedSec + 's';
-    if (data.engines && data.engines.length) {
-      const pids = data.engines.map((e) => e.pid).join('/');
-      const maxSec = Math.max(...data.engines.map((e) => e.elapsedSec || 0));
-      text += ' · 引擎 ×' + data.engines.length + ' (' + pids + ') ' + maxSec + 's';
-    }
-    chip.textContent = text;
+    const engines = data.engines || [];
+    chip.textContent = '● ' + kind + ' ' + data.job.elapsedSec + 's' + (engines.length ? ' · 引擎 ×' + engines.length : '');
     chip.className = 'chip act busy';
     chip.title = (data.job.lastLogs || []).join('\n') || '任务进行中';
+    renderActEngines(engines);
+    if ($('#act-log')) $('#act-log').textContent = (data.job.lastLogs || []).slice(-4).join('\n');
   } catch { /* 服务暂不可达时保持原样 */ }
 }
-setInterval(pollActivity, 1500);
+
+// Incremental engine worker chips with enter/leave animations
+function renderActEngines(engines) {
+  const box = $('#act-engines');
+  if (!box) return;
+  const alive = new Set(engines.map((e) => e.pid));
+  for (const [pid, el] of actEngines) {
+    if (!alive.has(pid)) {
+      el.classList.add('die');
+      setTimeout(() => { try { el.remove(); } catch {} }, 320);
+      actEngines.delete(pid);
+    }
+  }
+  for (const e of engines) {
+    let el = actEngines.get(e.pid);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'act-engine';
+      el.innerHTML = '<span class="ae-dot"></span><span class="ae-pid"></span><span class="ae-sec"></span>';
+      box.appendChild(el);
+      actEngines.set(e.pid, el);
+    }
+    el.querySelector('.ae-pid').textContent = 'PID ' + e.pid;
+    el.querySelector('.ae-sec').textContent = e.elapsedSec + 's';
+  }
+  box.hidden = engines.length === 0;
+}
+
+// popover: show on hover / focus
+const actWrap = $('#act-wrap');
+if (actWrap) {
+  actWrap.addEventListener('mouseenter', () => { actHover = true; $('#act-pop').hidden = false; });
+  actWrap.addEventListener('mouseleave', () => { actHover = false; $('#act-pop').hidden = true; });
+  $('#act').addEventListener('click', () => { $('#act-pop').hidden = !$('#act-pop').hidden; });
+}
+setInterval(pollActivity, 1200);
 
 (async function init() {
   connectSse();

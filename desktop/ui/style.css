@@ -206,6 +206,34 @@ button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 }
 
 /* ---------- 芯片 ---------- */
+#act-wrap { position: relative; display: inline-flex; }
+.act-pop {
+  position: absolute; top: calc(100% + 8px); right: 0; width: 320px;
+  background: rgba(13, 17, 23, 0.97); border: 1px solid var(--line-strong);
+  border-radius: 14px; padding: 12px 14px; z-index: 60;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(124, 110, 255, 0.08);
+  backdrop-filter: blur(16px);
+}
+.act-pop-title { font-size: 12px; font-weight: 700; color: var(--accent); margin-bottom: 8px; letter-spacing: 0.5px; }
+.act-engines { display: flex; flex-direction: column; gap: 2px; max-height: 160px; overflow: auto; }
+.act-engine {
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+  border-radius: 8px; background: rgba(255, 255, 255, 0.04);
+  font-size: 12px; font-variant-numeric: tabular-nums;
+  animation: ae-in 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.act-engine.die { animation: ae-out 0.3s ease forwards; }
+.ae-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px rgba(92, 179, 255, 0.8); animation: ae-blink 1s ease-in-out infinite; }
+.ae-pid { color: var(--muted); flex: 1; }
+.ae-sec { color: #fff; font-weight: 600; }
+.act-log {
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line);
+  font-size: 11px; color: var(--muted); max-height: 96px; overflow: auto;
+  white-space: pre-wrap; font-family: var(--mono);
+}
+@keyframes ae-in { from { opacity: 0; transform: translateX(-10px) scale(0.85); } to { opacity: 1; transform: none; } }
+@keyframes ae-out { to { opacity: 0; transform: scale(0.8); } }
+@keyframes ae-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 .chip.act { min-width: 120px; text-align: center; font-variant-numeric: tabular-nums; }
 .chip.act.idle { color: var(--ok); border-color: rgba(74, 222, 154, 0.35); background: rgba(74, 222, 154, 0.08); }
 .chip.act.busy { color: var(--accent); border-color: rgba(92, 179, 255, 0.45); background: rgba(92, 179, 255, 0.1); animation: act-pulse 1.6s ease-in-out infinite; }

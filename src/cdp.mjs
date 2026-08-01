@@ -17,12 +17,30 @@ const MIME = {
   '.css': 'text/css; charset=utf-8',
 };
 
-export function startStaticServer(rootDir, port = 0) {
+export function startStaticServer(rootDir, opts = {}) {
+  // backwards compatible: startStaticServer(rootDir, portNumber)
+  if (typeof opts === 'number') opts = { port: opts };
+  const { port = 0, onPost = null } = opts;
   const root = path.resolve(rootDir);
   const server = http.createServer((req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
       let pathname = decodeURIComponent(url.pathname);
+      if (req.method === 'POST' && onPost) {
+        const chunks = [];
+        req.on('data', (c) => chunks.push(c));
+        req.on('end', () => {
+          try { onPost(pathname, Buffer.concat(chunks), res, url); }
+          catch (e) { try { res.writeHead(500); res.end(String(e)); } catch {} }
+        });
+        req.on('error', () => { try { res.writeHead(400); res.end('bad request'); } catch {} });
+        return;
+      }
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405);
+        res.end('method not allowed');
+        return;
+      }
       if (pathname.endsWith('/')) pathname += 'index.html';
       const filePath = path.resolve(root, '.' + pathname);
       if (!filePath.startsWith(root + path.sep) && filePath !== root) {

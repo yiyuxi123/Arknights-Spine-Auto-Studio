@@ -17,7 +17,14 @@
     <span id="chip-key" class="chip">DeepSeek …</span>
     <span id="chip-vision" class="chip">千问视觉 …</span>
     <span id="chip-srv" class="chip">服务 …</span>
-    <span id="act" class="chip act idle" title="实时处理状态">● 空闲</span>
+    <span id="act-wrap">
+      <span id="act" class="chip act idle" title="实时处理状态：任务与引擎进程">● 空闲</span>
+      <div id="act-pop" class="act-pop" hidden>
+        <div class="act-pop-title">⚙ 正在运行的引擎进程</div>
+        <div id="act-engines" class="act-engines"></div>
+        <div id="act-log" class="act-log"></div>
+      </div>
+    </span>
     <span id="chip-perf" class="chip perf-chip" title="软件性能监测，点击打开图表">性能 …</span>
   </div>
   <button id="btn-settings" class="icon-btn" title="设置">⚙</button>

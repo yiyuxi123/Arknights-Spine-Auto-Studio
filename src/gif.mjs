@@ -61,23 +61,38 @@ function medianCut(rgba, width, height, maxColors = 256) {
   return palette;
 }
 
-function nearestIndex(palette, r, g, b) {
-  let best = 1; // index 0 is the transparent slot; never pick it for opaque pixels
-  let bestDistance = Infinity;
-  for (let i = 1; i < palette.length; i++) {
-    const dr = palette[i][0] - r;
-    const dg = palette[i][1] - g;
-    const db = palette[i][2] - b;
-    const distance = dr * dr + dg * dg + db * db;
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = i;
+function buildNearestLut(palette) {
+  const lut = new Uint8Array(32 * 32 * 32);
+  for (let r = 0; r < 32; r++) {
+    const rr = r * 8 + 4;
+    for (let g = 0; g < 32; g++) {
+      const gg = g * 8 + 4;
+      for (let b = 0; b < 32; b++) {
+        const bb = b * 8 + 4;
+        let best = 1; // index 0 is the transparent slot; never pick it
+        let bestDistance = Infinity;
+        for (let i = 1; i < palette.length; i++) {
+          const dr = palette[i][0] - rr;
+          const dg = palette[i][1] - gg;
+          const db = palette[i][2] - bb;
+          const distance = dr * dr + dg * dg + db * db;
+          if (distance < bestDistance) { bestDistance = distance; best = i; }
+        }
+        lut[(r * 32 + g) * 32 + b] = best;
+      }
     }
   }
-  return best;
+  return lut;
+}
+let lutCache = null;
+let lutPalette = null;
+function nearestIndexLut(palette) {
+  if (lutPalette !== palette) { lutCache = buildNearestLut(palette); lutPalette = palette; }
+  return lutCache;
 }
 
 function quantize(rgba, width, height, palette) {
+  const lutRef = nearestIndexLut(palette);
   const indices = new Uint8Array(width * height);
   const err = new Float32Array(width * height * 3);
   for (let y = 0; y < height; y++) {
@@ -95,7 +110,8 @@ function quantize(rgba, width, height, palette) {
       r = Math.max(0, Math.min(255, r));
       g = Math.max(0, Math.min(255, g));
       b = Math.max(0, Math.min(255, b));
-      const index = nearestIndex(palette, r, g, b);
+      const lut = lutRef;
+      const index = lut[((r | 0) >> 3 & 31) * 1024 + ((g | 0) >> 3 & 31) * 32 + ((b | 0) >> 3 & 31)];
       indices[i] = index;
       const dr = r - palette[index][0];
       const dg = g - palette[index][1];
@@ -134,9 +150,10 @@ function lzwEncode(indices, minCodeSize) {
   const output = [];
   let codeSize = minCodeSize + 1;
   let nextCode = endCode + 1;
-  const dictionary = new Map();
-  let previous = null;
-  let previousKey = '';
+  // integer-key dictionary: key = prefixCode * 256 + symbol (max 4095*256+255 = 1<<20 - 1)
+  const dictionary = new Int32Array(1 << 20).fill(-1);
+  const dirty = [];
+  let previous = -1;
   let bitBuffer = 0;
   let bitCount = 0;
 
@@ -151,7 +168,8 @@ function lzwEncode(indices, minCodeSize) {
   };
 
   const reset = () => {
-    dictionary.clear();
+    for (const k of dirty) dictionary[k] = -1;
+    dirty.length = 0;
     nextCode = endCode + 1;
     codeSize = minCodeSize + 1;
   };
@@ -159,19 +177,19 @@ function lzwEncode(indices, minCodeSize) {
   emit(clearCode);
   for (let i = 0; i < indices.length; i++) {
     const symbol = indices[i];
-    if (previous === null) {
+    if (previous < 0) {
       previous = symbol;
-      previousKey = String(symbol);
       continue;
     }
-    const key = `${previousKey},${symbol}`;
-    if (dictionary.has(key)) {
-      previous = dictionary.get(key);
-      previousKey = key;
+    const key = previous * 256 + symbol;
+    const found = dictionary[key];
+    if (found >= 0) {
+      previous = found;
       continue;
     }
     emit(previous);
-    dictionary.set(key, nextCode);
+    dictionary[key] = nextCode;
+    dirty.push(key);
     if (nextCode === (1 << codeSize) && codeSize < 12) codeSize++;
     nextCode++;
     if (nextCode > 4095) {
@@ -179,9 +197,8 @@ function lzwEncode(indices, minCodeSize) {
       reset();
     }
     previous = symbol;
-    previousKey = String(symbol);
   }
-  if (previous !== null) emit(previous);
+  if (previous >= 0) emit(previous);
   emit(endCode);
   if (bitCount > 0) output.push(bitBuffer & 0xff);
   return output;
@@ -193,10 +210,80 @@ function lzwEncode(indices, minCodeSize) {
 export { medianCut, quantize, lzwEncode };
 
 /**
+ * Convert a raw WebGL readPixels buffer (bottom-left origin, premultiplied
+ * alpha) into straight-alpha RGBA with top-left origin. Used by GIF workers
+ * and the palette stage.
+ */
+export function straightenRgba(rgba, width, height) {
+  const out = Buffer.alloc(rgba.length);
+  for (let y = 0; y < height; y++) {
+    const srcRow = (height - 1 - y) * width * 4;
+    const dstRow = y * width * 4;
+    for (let x = 0; x < width; x++) {
+      const si = srcRow + x * 4;
+      const di = dstRow + x * 4;
+      const a = rgba[si + 3];
+      out[di + 3] = a;
+      if (a === 0) {
+        out[di] = 0; out[di + 1] = 0; out[di + 2] = 0;
+      } else {
+        out[di] = Math.min(255, Math.round(rgba[si] * 255 / a));
+        out[di + 1] = Math.min(255, Math.round(rgba[si + 1] * 255 / a));
+        out[di + 2] = Math.min(255, Math.round(rgba[si + 2] * 255 / a));
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Streaming GIF89a encoder: create once, write() one RGBA frame at a time,
  * finish() returns the complete file buffer. Only the current frame stays in
  * memory (safe for 1280x1280@60fps long renders that would otherwise hold GBs).
  */
+/**
+ * Parallel-friendly GIF builders: worker threads do the heavy per-frame
+ * pixel work (quantize + LZW), the main thread only assembles small headers.
+ */
+export function buildGifHeader(width, height, palette) {
+  const parts = [Buffer.from('GIF89a')];
+  const descriptor = Buffer.alloc(7);
+  descriptor.writeUInt16LE(width, 0);
+  descriptor.writeUInt16LE(height, 2);
+  descriptor[4] = 0xf7; // global color table, 8 bits, 256 entries
+  descriptor[5] = 0;
+  descriptor[6] = 0;
+  parts.push(descriptor);
+  for (const entry of palette) parts.push(Buffer.from([entry[0], entry[1], entry[2]]));
+  // NETSCAPE2.0 application extension: loop forever (count 0).
+  parts.push(Buffer.from([0x21, 0xff, 0x0b, 0x4e, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45, 0x32, 0x2e, 0x30, 0x03, 0x01, 0x00, 0x00, 0x00]));
+  return Buffer.concat(parts);
+}
+export function buildGifFrame(compressed, width, height, delay) {
+  const parts = [];
+  // packed: 0x09 = disposal=2 (restore to background) | transparent-color-flag.
+  const gce = Buffer.from([0x21, 0xf9, 0x04, 0x09, delay & 0xff, delay >> 8, 0x00, 0x00]);
+  parts.push(gce);
+  const image = Buffer.alloc(10);
+  image[0] = 0x2c;
+  image.writeUInt16LE(0, 1);
+  image.writeUInt16LE(0, 3);
+  image.writeUInt16LE(width, 5);
+  image.writeUInt16LE(height, 7);
+  image[9] = 0x00; // no local color table
+  parts.push(image);
+  parts.push(Buffer.from([8])); // min code size
+  for (let i = 0; i < compressed.length; i += 255) {
+    const block = compressed.slice(i, i + 255);
+    parts.push(Buffer.from([block.length, ...block]));
+  }
+  parts.push(Buffer.from([0x00]));
+  return Buffer.concat(parts);
+}
+export function gifTrailer() {
+  return Buffer.from([0x3b]);
+}
+
 export function createGifEncoder(width, height, { fps = 15, maxColors = 256 } = {}) {
   const chunks = [];
   const push = (buf) => chunks.push(buf);
@@ -224,29 +311,8 @@ export function createGifEncoder(width, height, { fps = 15, maxColors = 256 } = 
     write(frame) {
       if (!frame) throw new Error('createGifEncoder.write: frame required');
       if (!started) { start(frame); started = true; }
-      const indices = quantize(frame, width, height, palette);
-      // packed: 0x09 = disposal=2 (restore to background) | transparent-color-flag.
-      // disposal=2 + transparent index 0 is the standard choice for full-canvas
-      // transparent animations (same as ffmpeg/Pillow output); verified in Chrome
-      // 151 (ImageDecoder + <img> playback), GDI+ and ffmpeg.
-      const gce = Buffer.from([0x21, 0xf9, 0x04, 0x09, delay & 0xff, delay >> 8, 0x00, 0x00]);
-      push(gce);
-      const image = Buffer.alloc(10);
-      image[0] = 0x2c;
-      image.writeUInt16LE(0, 1);
-      image.writeUInt16LE(0, 3);
-      image.writeUInt16LE(width, 5);
-      image.writeUInt16LE(height, 7);
-      image[9] = 0x00; // no local color table
-      push(image);
-      const minCodeSize = 8;
-      push(Buffer.from([minCodeSize]));
-      const compressed = lzwEncode(indices, minCodeSize);
-      for (let i = 0; i < compressed.length; i += 255) {
-        const block = compressed.slice(i, i + 255);
-        push(Buffer.from([block.length, ...block]));
-      }
-      push(Buffer.from([0x00]));
+      const compressed = lzwEncode(quantize(frame, width, height, palette), 8);
+      push(buildGifFrame(compressed, width, height, delay));
     },
     finish() {
       if (!started) throw new Error('createGifEncoder.finish: no frames written');

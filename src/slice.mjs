@@ -183,11 +183,16 @@ export function packShelf(items, { gap = 2, maxW = MAX_SHEET } = {}) {
  *   regions: 'ccw' (default) or 'cw' (also via env SLICE_ROT_DIR)
  * @param {number} [opts.gap]           gap between pieces in output pixels (default 2)
  * @param {number} [opts.concurrency]   how many pieces are upscaled in parallel (default 1)
+ * @param {boolean} [opts.batch]        batch pieces into group sheets so each
+ *   engine call covers many pieces (huge speedup; default true)
+ * @param {number} [opts.batchGap]      transparent gap between pieces inside a
+ *   batch sheet in source pixels (default 8)
+ * @param {number} [opts.batchArea]     max source pixels per batch group (default 810000)
  * @param {(m: string) => void} [opts.onLog]
  * @param {(p: {done: number, total: number}) => void} [opts.onProgress]  per-piece progress
  * @returns {Promise<{png: Buffer, width: number, height: number, slots: Array<object>}>}
  */
-export async function slicePage({ rgba, pageW, pageH, regions, scale, upscalePiece, pad = 4, gap = 2, rotateDir, concurrency = 1, onLog = () => {}, onProgress = null }) {
+export async function slicePage({ rgba, pageW, pageH, regions, scale, upscalePiece, pad = 4, gap = 2, rotateDir, concurrency = 1, batch = true, batchGap = 8, batchArea = 810000, onLog = () => {}, onProgress = null }) {
   if (!regions.length) throw new Error('page has no regions');
   // Phase 1: crop / de-rotate / pad each region (cheap, synchronous)
   const jobs = [];
@@ -249,6 +254,19 @@ export async function slicePage({ rgba, pageW, pageH, regions, scale, upscalePie
     if (onProgress) onProgress({ done, total });
     else onLog('[slice] 放大进度 ' + done + '/' + total);
   };
+  const pushPiece = (job, up, outW, sx0, sy0) => {
+    const px = Math.round(job.pad * job.scale);
+    const tw = Math.max(1, Math.round((job.fullW - job.pad * 2) * job.scale));
+    const th = Math.max(1, Math.round((job.fullH - job.pad * 2) * job.scale));
+    const inner = Buffer.alloc(tw * th * 4);
+    for (let yy = 0; yy < th; yy++) {
+      const src = ((sy0 + yy + px) * outW + (sx0 + px)) * 4;
+      up.copy(inner, yy * tw * 4, src, src + tw * 4);
+    }
+    items.push({ name: job.name, w: tw, h: th, rgba: inner, orig: job.orig, offset: job.offset, index: job.index, attrs: job.attrs });
+    done += 1;
+    report();
+  };
   const workOne = async (job) => {
     let up;
     try {
@@ -258,27 +276,55 @@ export async function slicePage({ rgba, pageW, pageH, regions, scale, upscalePie
       onLog('[slice] ' + job.name + ' 单片放大失败，跳过该片: ' + (e && e.message || e));
       return;
     }
-    const px = Math.round(job.pad * job.scale);
-    const tw = Math.max(1, Math.round((job.fullW - job.pad * 2) * job.scale));
-    const th = Math.max(1, Math.round((job.fullH - job.pad * 2) * job.scale));
-    const inner = Buffer.alloc(tw * th * 4);
-    for (let yy = 0; yy < th; yy++) {
-      const src = ((yy + px) * job.targetW + px) * 4;
-      up.copy(inner, yy * tw * 4, src, src + tw * 4);
-    }
-    items.push({ name: job.name, w: tw, h: th, rgba: inner, orig: job.orig, offset: job.offset, index: job.index, attrs: job.attrs });
-    done += 1;
-    report();
+    pushPiece(job, up, job.targetW, 0, 0);
   };
-  const pool = Math.max(1, Math.min(concurrency || 1, jobs.length));
-  let cursor = 0;
-  const worker = async () => {
-    while (cursor < jobs.length) {
-      const job = jobs[cursor++];
-      await workOne(job);
-    }
+  const runPool = async (work, n) => {
+    let cursor = 0;
+    const worker = async () => { while (cursor < n) { const i = cursor++; await work(i); } };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency || 1, n)) }, worker));
   };
-  await Promise.all(Array.from({ length: pool }, worker));
+
+  const useBatch = batch && process.env.ZDXR_SLICE_NO_BATCH !== '1';
+  if (useBatch) {
+    // Batch mode: greedy-area groups -> one engine call per group sheet. This
+    // amortizes engine process startup over many pieces (order-of-magnitude
+    // speedup). If a group fails, fall back to per-piece for that group.
+    const sorted = [...jobs].sort((a, b) => (b.fullW * b.fullH) - (a.fullW * a.fullH));
+    const groups = [];
+    let cur = [], curArea = 0;
+    for (const j of sorted) {
+      const area = (j.fullW + batchGap) * (j.fullH + batchGap);
+      if (cur.length && curArea + area > batchArea) { groups.push(cur); cur = []; curArea = 0; }
+      cur.push(j); curArea += area;
+    }
+    if (cur.length) groups.push(cur);
+    await runPool(async (gi) => {
+      const group = groups[gi];
+      const items2 = group.map((j) => ({ name: j.name, w: j.fullW, h: j.fullH }));
+      const packed = packShelf(items2, { gap: batchGap });
+      const sheet = Buffer.alloc(packed.width * packed.height * 4);
+      const byName = new Map(group.map((j) => [j.name, j]));
+      for (const s of packed.slots) {
+        const j = byName.get(s.name);
+        for (let yy = 0; yy < j.fullH; yy++) j.padded.copy(sheet, ((s.y + yy) * packed.width + s.x) * 4, yy * j.fullW * 4, (yy + 1) * j.fullW * 4);
+      }
+      let up;
+      try {
+        up = await upscalePiece(sheet, packed.width, packed.height, packed.width * scale, packed.height * scale);
+        if (up.length !== packed.width * scale * packed.height * scale * 4) throw new Error('wrong output size');
+      } catch (e) {
+        onLog('[slice] 第 ' + (gi + 1) + ' 组批量放大失败，该组 ' + group.length + ' 片回退单片放大: ' + (e && e.message || e));
+        for (const j of group) await workOne(j);
+        return;
+      }
+      for (const s of packed.slots) {
+        const j = byName.get(s.name);
+        pushPiece(j, up, packed.width * scale, s.x * scale, s.y * scale);
+      }
+    }, groups.length);
+  } else {
+    await runPool(async (i) => { await workOne(jobs[i]); }, jobs.length);
+  }
   if (!items.length) throw new Error('all pieces failed');
   // Phase 3: pack
   const packed = packShelf(items, { gap });

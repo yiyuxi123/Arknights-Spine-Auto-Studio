@@ -262,7 +262,64 @@
     },
     snapshot() {
       if (!ready) throw new Error('studio not ready');
-      return canvas.toDataURL('image/png');
+      var w = canvas.width, h = canvas.height;
+      var pixels = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      // WebGL origin is bottom-left: flip vertically; values are
+      // premultiplied: convert back to straight alpha.
+      var out = new Uint8Array(w * h * 4);
+      for (var y = 0; y < h; y++) {
+        var srcRow = (h - 1 - y) * w * 4;
+        var dstRow = y * w * 4;
+        for (var x = 0; x < w; x++) {
+          var si = srcRow + x * 4, di = dstRow + x * 4;
+          var a = pixels[si + 3];
+          out[di + 3] = a;
+          if (a === 0) { out[di] = 0; out[di + 1] = 0; out[di + 2] = 0; }
+          else {
+            out[di] = Math.min(255, Math.round(pixels[si] * 255 / a));
+            out[di + 1] = Math.min(255, Math.round(pixels[si + 1] * 255 / a));
+            out[di + 2] = Math.min(255, Math.round(pixels[si + 2] * 255 / a));
+          }
+        }
+      }
+      var binary = '';
+      var CHUNK = 0x8000;
+      for (var i = 0; i < out.length; i += CHUNK) {
+        binary += String.fromCharCode.apply(null, out.subarray(i, i + CHUNK));
+      }
+      return 'data:image/raw;base64,' + btoa(binary);
+    },
+    stepAndSnapshot(params) {
+      var r = this.step(params);
+      if (!r || !r.ok) return r;
+      r.dataUrl = this.snapshot();
+      return r;
+    },
+    async renderFrames(params) {
+      // Render a batch of frames and POST the raw premultiplied RGBA bytes to
+      // the local frame server (zero base64/JSON overhead). One round-trip
+      // per batch instead of per frame.
+      if (!ready) throw new Error('studio not ready');
+      var list = params && params.frames || [];
+      var w = canvas.width, h = canvas.height;
+      var size = w * h * 4;
+      var total = new Uint8Array(size * list.length);
+      var r = null;
+      for (var i = 0; i < list.length; i++) {
+        r = this.step(list[i]);
+        if (!r || !r.ok) return { ok: false, error: 'step failed at ' + i + (r && r.error ? ': ' + r.error : '') };
+        var pixels = new Uint8Array(size);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        total.set(pixels, i * size);
+      }
+      var resp = await fetch(location.origin + '/frame?batch=' + params.batch + '&count=' + list.length, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: total.buffer,
+      });
+      if (!resp.ok) return { ok: false, error: 'frame post failed: HTTP ' + resp.status };
+      return { ok: true, count: list.length, fallback: r && r.fallback };
     },
     ready() { return ready; },
     error() { return loadError; }

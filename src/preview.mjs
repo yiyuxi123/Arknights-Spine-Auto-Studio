@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession, rmrfRetry } from './cdp.mjs';
-import { encodeGif } from './gif.mjs';
-import { decodePng } from './png.mjs';
+import { GifWorkerPool } from './gif-pool.mjs';
+import { buildGifHeader, buildGifFrame, gifTrailer, medianCut } from './gif.mjs';
+import { encodePng } from './png.mjs';
 
 /**
  * Render previews for every animation clip of a Spine 3.8 model.
@@ -59,44 +60,60 @@ export async function renderActionPreviews({
       bg: background,
       mix: String(mix),
     });
-    const { sessionId } = await newPageSession(cdp, server.origin + '/render/index.html?' + query);
-    const send = (m, p) => cdp.send(m, p, sessionId);
-    const load = await evalJs(send, 'studio.load()');
+    const pageUrl = server.origin + '/render/index.html?' + query;
+    const first = await newPageSession(cdp, pageUrl);
+    const sendFirst = (m, p) => cdp.send(m, p, first.sessionId);
+    const load = await evalJs(sendFirst, 'studio.load()');
     if (!load || !load.ok) throw new Error('studio.load failed: ' + (load && load.error));
     const animations = load.animations || [];
     if (!animations.length) throw new Error('该模型没有任何动画');
     fs.mkdirSync(outDir, { recursive: true });
+    // Parallel previews: up to 4 pages render different actions at once, GIF
+    // encoding runs on the shared worker pool.
+    const pool = new GifWorkerPool(Math.max(2, Math.min(8, (os.cpus?.() || [1, 2, 3, 4]).length - 1)));
+    const delay = Math.max(1, Math.round(100 / previewFps));
     const items = [];
-    for (const a of animations) {
-      const safe = String(a.name).replace(/[^\w\u4e00-\u9fa5-]+/g, '_') || 'action';
-      const step = (t) => evalJs(send, 'studio.step(' + JSON.stringify({ action: a.name, loop: true, delta: t }) + ')');
-      if (mode === 'frame') {
-        const t = a.duration > 0 ? Math.min(a.duration * 0.45, 3) : 0.12;
-        await step(t);
-        const dataUrl = await evalJs(send, 'studio.snapshot()');
-        const buf = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
-        const file = path.join(outDir, safe + '.png');
-        fs.writeFileSync(file, buf);
-        items.push({ name: a.name, duration: a.duration, kind: 'png', file });
-        onLog('[preview] ' + a.name + ' ' + a.duration.toFixed(2) + 's -> ' + safe + '.png');
-      } else {
-        // GIF 模式：渲染一段循环动画
-        const frames = a.duration > 0 ? Math.max(8, Math.min(Math.round(a.duration * previewFps), maxFrames)) : 8;
-        const rgbaFrames = [];
-        for (let f = 0; f < frames; f++) {
-          await step(1 / previewFps);
-          const dataUrl = await evalJs(send, 'studio.snapshot()');
-          const png = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
-          const decoded = decodePng(png);
-          rgbaFrames.push(decoded.rgba);
+    let cursor = 0;
+    const renderOne = async () => {
+      while (cursor < animations.length) {
+        const a = animations[cursor++];
+        const safe = String(a.name).replace(/[^\w\u4e00-\u9fa5-]+/g, '_') || 'action';
+        const { sessionId } = await newPageSession(cdp, pageUrl);
+        const send = (m, p) => cdp.send(m, p, sessionId);
+        await evalJs(send, 'studio.load()');
+        const step = (t) => evalJs(send, 'studio.step(' + JSON.stringify({ action: a.name, loop: true, delta: t }) + ')');
+        if (mode === 'frame') {
+          const t = a.duration > 0 ? Math.min(a.duration * 0.45, 3) : 0.12;
+          await step(t);
+          const dataUrl = String(await evalJs(send, 'studio.snapshot()'));
+          const rgba = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
+          const file = path.join(outDir, safe + '.png');
+          fs.writeFileSync(file, encodePng(rgba, width, height));
+          items.push({ name: a.name, duration: a.duration, kind: 'png', file });
+          onLog('[preview] ' + a.name + ' ' + a.duration.toFixed(2) + 's -> ' + safe + '.png');
+        } else {
+          const frames = a.duration > 0 ? Math.max(8, Math.min(Math.round(a.duration * previewFps), maxFrames)) : 8;
+          const rgbaFrames = [];
+          for (let f = 0; f < frames; f++) {
+            await step(1 / previewFps);
+            const dataUrl = String(await evalJs(send, 'studio.snapshot()'));
+            rgbaFrames.push(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'));
+          }
+          const palette = medianCut(rgbaFrames[0], width, height, 256);
+          const chunks = [buildGifHeader(width, height, palette)];
+          const comps = await Promise.all(rgbaFrames.map((rgba) => pool.encode(rgba, width, height, palette, { straight: false })));
+          for (const c of comps) chunks.push(buildGifFrame(c, width, height, delay));
+          chunks.push(gifTrailer());
+          const gif = Buffer.concat(chunks);
+          const file = path.join(outDir, safe + '.gif');
+          fs.writeFileSync(file, gif);
+          items.push({ name: a.name, duration: a.duration, kind: 'gif', file });
+          onLog('[preview] ' + a.name + ' ' + a.duration.toFixed(2) + 's ' + frames + '帧 -> ' + safe + '.gif');
         }
-        const gif = encodeGif(rgbaFrames, width, height, { fps: previewFps });
-        const file = path.join(outDir, safe + '.gif');
-        fs.writeFileSync(file, gif);
-        items.push({ name: a.name, duration: a.duration, kind: 'gif', file });
-        onLog('[preview] ' + a.name + ' ' + a.duration.toFixed(2) + 's ' + frames + '帧 -> ' + safe + '.gif');
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(4, animations.length)) }, renderOne));
+    pool.close();
     return items;
   } finally {
     try { cdp?.close?.(); } catch {}
@@ -154,10 +171,10 @@ export async function renderKeyframes({
       const t = i === 0 ? 0.05 : Math.min((i / count) * total * 0.8 + 0.05, total * 0.95);
       await evalJs(send, 'studio.step(' + JSON.stringify({ action, loop: true, delta: Math.max(0.016, t - prevT) }) + ')');
       prevT = t;
-      const dataUrl = await evalJs(send, 'studio.snapshot()');
-      const buf = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
+      const dataUrl = String(await evalJs(send, 'studio.snapshot()'));
+      const rgba = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
       const file = path.join(outDir, 'kf' + i + '.png');
-      fs.writeFileSync(file, buf);
+      fs.writeFileSync(file, encodePng(rgba, width, height));
       files.push(file);
     }
     onLog('[keyframes] ' + action + ' -> ' + files.length + ' 帧');
