@@ -1,6 +1,6 @@
 {
   "name": "arknights-spine-auto-studio",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "type": "module",
   "description": "Arknights Spine Auto-Studio: natural language to Arknights character animation (GIF/MP4) via Spine 3.8 + headless Chrome, zero dependencies",

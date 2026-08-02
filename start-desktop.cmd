@@ -1,24 +1,32 @@
 @echo off
 chcp 936 >nul
 cd /d "%~dp0"
-where node >nul 2>nul
-if errorlevel 1 (
-  echo [错误] 未找到 Node.js，请先安装 Node.js v18+ 并加入 PATH。
-  pause
-  exit /b 1
+rem --- prefer bundled portable node ---
+set "NODE=%~dp0vendor\node\node.exe"
+if not exist "%NODE%" (
+  where node >nul 2>nul
+  if errorlevel 1 (
+    echo [错误] 未找到 Node.js 运行时。
+    echo 本发布包已内置便携版 Node（vendor\node\node.exe），
+    echo 若该文件缺失（可能被安全软件拦截），请重新解压或安装 Node.js v18+ 并加入 PATH。
+    pause
+    exit /b 1
+  )
+  set "NODE=node"
 )
 
 if exist "desktop\node_modules\electron\dist\electron.exe" (
-  echo 启动 Electron 桌面版...
+  echo 检测到 Electron，正在启动桌面窗口...
   start "" "desktop\node_modules\electron\dist\electron.exe" "desktop\electron-main.cjs"
   exit /b 0
 )
 
-echo 启动本地服务（未安装 Electron，使用 Chrome 窗口模式；可运行 install-desktop.cmd 安装 Electron）...
-start "Arknights Spine Studio - Server" node desktop\server.mjs
+echo 未安装 Electron，使用 Chrome 应用窗口模式（零安装，推荐）。
+echo 如需独立桌面窗口，可运行 install-desktop.cmd 安装 Electron。
+start "Arknights Spine Studio - Server" "%NODE%" desktop\server.mjs
 
-echo 等待服务就绪...
-node desktop\wait-ready.mjs
+echo 等待本地服务就绪...
+"%NODE%" desktop\wait-ready.mjs
 if errorlevel 1 (
   echo [错误] 本地服务启动失败，请查看上面的服务窗口日志。
   pause
@@ -26,7 +34,7 @@ if errorlevel 1 (
 )
 
 if /i "%~1"=="--no-browser" (
-  echo 服务已就绪: http://127.0.0.1:4879/ui/
+  echo 服务已启动: http://127.0.0.1:4879/ui/
   exit /b 0
 )
 

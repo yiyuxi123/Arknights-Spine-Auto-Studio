@@ -13,3 +13,4 @@ config.json
 *.log
 .DS_Storetest/out.gif
 ???? *.mp4
+vendor/node/

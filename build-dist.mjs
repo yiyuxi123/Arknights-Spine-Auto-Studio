@@ -75,6 +75,7 @@ if (full) {
   copy('vendor/realesrgan');
   copy('vendor/waifu2x');
   copy('vendor/realcugan');
+  copy('vendor/node'); // bundled portable Node.js runtime (start-desktop.cmd prefers it)
 }
 
 // ---- 内置示例资源 ----
