@@ -244,6 +244,7 @@ async function cmdRun(args) {
   const { width, height } = parseSize(args.size || '640x640');
   const mix = parseFloat(args.mix || '0.2') || 0.2;
   const fit = parseFloat(args.fit || '0.92') || 0.92;
+  const camMode = String(args['cam-mode'] || 'fixed');
   const background = String(args.bg || '00000000');
   const format = String(args.format || 'gif').toLowerCase();
 
