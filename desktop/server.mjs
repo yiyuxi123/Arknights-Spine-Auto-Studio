@@ -741,6 +741,7 @@ async function handleApi(req, res, url) {
     if (body.fit) {
       const fitNum = parseFloat(body.fit);
       if (!Number.isNaN(fitNum) && fitNum > 0.3 && fitNum < 3) argv.push('--fit', String(fitNum));
+    if (body.camMode === 'fixed' || body.camMode === 'dynamic') argv.push('--cam-mode', String(body.camMode));
     }
     if (body.upscale && parseInt(body.upscale, 10) > 1) argv.push('--upscale', String(body.upscale));
     if (body.sr) argv.push('--sr');

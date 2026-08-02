@@ -390,6 +390,7 @@ async function cmdRun(args) {
       fps,
       background,
       mix,
+      camMode,
       fit,
       onFrame: (f, n) => {
         if (f === 1 || f % Math.max(1, Math.round(n / 10)) === 0 || f === n) {
@@ -443,6 +444,7 @@ async function cmdRun(args) {
         fps,
         background,
         mix,
+        camMode,
         fit,
         onFrame: async (rgba, idx, n) => {
           if (pngDir) fs.writeFileSync(path.join(pngDir, `frame-${String(idx - 1).padStart(4, '0')}.png`), encodePng(rgba, width, height));

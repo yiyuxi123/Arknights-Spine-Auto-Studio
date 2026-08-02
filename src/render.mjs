@@ -29,6 +29,7 @@ export async function renderTimelineFrames({
   background = '00000000',
   mix = 0.2,
   fit = 0.92,
+  camMode = 'fixed',
   chromePath,
   onFrame = async () => {},
 } = {}) {
@@ -73,6 +74,7 @@ export async function renderTimelineFrames({
       bg: background,
       mix: String(mix),
       fit: String(fit),
+      camMode: String(camMode),
       // only fit to the actions actually used in this timeline, so a small
       // character is zoomed in and a large-amplitude move is not cropped
       actions: JSON.stringify([...new Set((timeline.timeline || []).map((s) => s.action).filter(Boolean))]),
