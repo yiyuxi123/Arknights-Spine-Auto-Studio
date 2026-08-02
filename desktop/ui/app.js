@@ -1236,6 +1236,7 @@ function buildRunBody(extra = {}) {
     mix: $('#g-mix').value,
     bg: $('#g-bg').value || '00000000',
     fit: $('#g-fit') ? $('#g-fit').value : '0.92',
+    camMode: $('#g-cam') ? $('#g-cam').value : 'fixed',
     outName: m.name + '-' + modelEntryLabel(m).replace(/[\\/]+/g, '_'),
   };
   if (assets?.isHi) {
@@ -1800,6 +1801,7 @@ setInterval(pollActivity, 1200);
       if (savedForm.format) $('#g-format').value = savedForm.format;
       if (savedForm.mix) $('#g-mix').value = savedForm.mix;
       if (savedForm.fit) $('#g-fit') && ($('#g-fit').value = savedForm.fit);
+      if (savedForm.camMode) $('#g-cam') && ($('#g-cam').value = savedForm.camMode);
       if (savedForm.bg) $('#g-bg').value = savedForm.bg;
       if (savedForm.upscale) $('#g-upscale').value = savedForm.upscale;
       if (savedForm.sr !== undefined) $('#g-sr').checked = !!savedForm.sr;

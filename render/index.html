@@ -26,6 +26,8 @@
     premultipliedAlpha: (params.get('premult') || '1') !== '0',
     mix: parseFloat(params.get('mix') || '0.2'),
     fit: parseFloat(params.get('fit') || '0.92'),
+    // 镜头模式：fixed=整条时间轴统一缩放（角色大小一致，推荐）；dynamic=跟随当前动作缩放（大幅动作会变小）
+    camMode: params.get('camMode') || 'fixed',
     views: null,
     // optional action whitelist: only these animations influence auto-fit,
     // so exports zoom to the actions actually used in the timeline
@@ -308,7 +310,7 @@
       target.state.update(delta);
       target.state.apply(target.skeleton);
       target.skeleton.updateWorldTransform();
-      applyDynamicCamera(target);
+      if (cfg.camMode === 'fixed') fitCamera(); else applyDynamicCamera(target);
       draw();
       return { ok: true, view: target.key, action: currentView._lastAction, fallback: requested !== currentView._lastAction };
     },
