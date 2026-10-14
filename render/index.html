@@ -268,12 +268,13 @@
         for (var i = 0; i < cfg.views.length; i++) {
           var v = await loadOne(cfg.views[i]);
           views.push(v);
-          if (!unionBounds) unionBounds = v.boundsInfo.union;
+          // Keep each view's bounds intact for the dynamic camera fallback.
+          if (!unionBounds) unionBounds = Object.assign({}, v.boundsInfo.union);
           else {
-            unionBounds.minX = Math.min(unionBounds.minX, v.boundsInfo.minX);
-            unionBounds.minY = Math.min(unionBounds.minY, v.boundsInfo.minY);
-            unionBounds.maxX = Math.max(unionBounds.maxX, v.boundsInfo.maxX);
-            unionBounds.maxY = Math.max(unionBounds.maxY, v.boundsInfo.maxY);
+            unionBounds.minX = Math.min(unionBounds.minX, v.boundsInfo.union.minX);
+            unionBounds.minY = Math.min(unionBounds.minY, v.boundsInfo.union.minY);
+            unionBounds.maxX = Math.max(unionBounds.maxX, v.boundsInfo.union.maxX);
+            unionBounds.maxY = Math.max(unionBounds.maxY, v.boundsInfo.union.maxY);
           }
         }
         currentView = views[0] || null;
