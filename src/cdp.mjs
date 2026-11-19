@@ -27,13 +27,9 @@ export function startStaticServer(rootDir, opts = {}) {
       const url = new URL(req.url, 'http://localhost');
       let pathname = decodeURIComponent(url.pathname);
       if (req.method === 'POST' && onPost) {
-        const chunks = [];
-        req.on('data', (c) => chunks.push(c));
-        req.on('end', () => {
-          try { onPost(pathname, Buffer.concat(chunks), res, url); }
-          catch (e) { try { res.writeHead(500); res.end(String(e)); } catch {} }
+        Promise.resolve(onPost(pathname, req, res, url)).catch(() => {
+          if (!res.headersSent && !res.destroyed) res.writeHead(400).end('Invalid frame batch');
         });
-        req.on('error', () => { try { res.writeHead(400); res.end('bad request'); } catch {} });
         return;
       }
       if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -69,7 +65,10 @@ export function startStaticServer(rootDir, opts = {}) {
       resolve({
         port: actual,
         origin: `http://127.0.0.1:${actual}`,
-        close: () => new Promise((res) => server.close(res)),
+        close: () => new Promise((resolve) => {
+          server.close(resolve);
+          server.closeAllConnections();
+        }),
       });
     });
   });
@@ -124,6 +123,9 @@ export function launchChrome({ chromePath = findChrome(), userDataDir, width = 8
     '--no-default-browser-check',
     '--disable-extensions',
     '--disable-background-networking',
+    '--disable-background-timer-throttling',
+    '--disable-renderer-backgrounding',
+    '--disable-backgrounding-occluded-windows',
     '--disable-component-update',
     '--mute-audio',
     // Default: use the real GPU (headless Chrome falls back to SwiftShader
@@ -176,7 +178,7 @@ export function launchChrome({ chromePath = findChrome(), userDataDir, width = 8
           return;
         }
         try {
-          const res = await fetch(`http://127.0.0.1:${port}/json/version`);
+          const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1000) });
           if (res.ok) {
             const info = await res.json();
             if (info && info.webSocketDebuggerUrl) {
@@ -201,6 +203,8 @@ export function launchChrome({ chromePath = findChrome(), userDataDir, width = 8
     wsUrl: () => wsUrlPromise,
     close: async () => {
       killTree(child);
+      // Chromium helpers may inherit stderr after the browser process exits.
+      child?.stderr.destroy();
       await new Promise((r) => setTimeout(r, 300));
     },
   };
@@ -215,6 +219,9 @@ export class CdpClient {
     this.nextId = 1;
     this.pending = new Map();
     this.listeners = new Map();
+    this.ws.addEventListener('message', (ev) => this.receive(ev));
+    this.ws.addEventListener('close', () => this.rejectPending(new Error('CDP websocket closed')));
+    this.ws.addEventListener('error', () => this.rejectPending(new Error('CDP websocket error')));
   }
   async open() {
     if (this.ws.readyState === WebSocket.OPEN) return;
@@ -222,29 +229,48 @@ export class CdpClient {
       this.ws.addEventListener('open', resolve, { once: true });
       this.ws.addEventListener('error', () => reject(new Error('CDP websocket error')), { once: true });
     });
-    this.ws.addEventListener('message', (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch { return; }
-      if (msg.id != null) {
-        const pending = this.pending.get(msg.id);
-        if (pending) {
-          this.pending.delete(msg.id);
-          if (msg.error) pending.reject(new Error(`${pending.method}: ${msg.error.message}`));
-          else pending.resolve(msg.result || {});
-        }
-      } else if (msg.method) {
-        const handlers = this.listeners.get(msg.method);
-        if (handlers) for (const fn of handlers) fn(msg.params || {});
+  }
+  receive(ev) {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.id != null) {
+      const pending = this.pending.get(msg.id);
+      if (pending) {
+        this.pending.delete(msg.id);
+        clearTimeout(pending.timer);
+        if (msg.error) pending.reject(new Error(`${pending.method}: ${msg.error.message}`));
+        else pending.resolve(msg.result || {});
       }
-    });
+    } else if (msg.method) {
+      const handlers = this.listeners.get(msg.method);
+      if (handlers) for (const fn of handlers) fn(msg.params || {});
+    }
+  }
+  rejectPending(error) {
+    for (const { reject, timer } of this.pending.values()) {
+      clearTimeout(timer);
+      reject(error);
+    }
+    this.pending.clear();
   }
   send(method, params = {}, sessionId = null) {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
-      this.pending.set(id, { resolve, reject, method });
       const payload = { id, method, params };
       if (sessionId) payload.sessionId = sessionId;
-      this.ws.send(JSON.stringify(payload));
+      if (this.ws.readyState !== WebSocket.OPEN) return reject(new Error('CDP websocket is not open'));
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error('Timed out waiting for CDP ' + method));
+      }, 120000);
+      this.pending.set(id, { resolve, reject, method, timer });
+      try {
+        this.ws.send(JSON.stringify(payload));
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
   on(method, fn) {
@@ -252,6 +278,7 @@ export class CdpClient {
     this.listeners.get(method).push(fn);
   }
   close() {
+    this.rejectPending(new Error('CDP client closed'));
     try { this.ws.close(); } catch {}
   }
 }
@@ -261,7 +288,10 @@ export async function evalJs(send, expression, { sessionId = null } = {}) {
     'Runtime.evaluate',
     { expression, awaitPromise: true, returnByValue: true, userGesture: true },
     sessionId,
-  );
+  ).catch(error => {
+    const command = expression.match(/^studio\.\w+/)?.[0] || 'page setup';
+    throw new Error(command + ': ' + error.message, { cause: error });
+  });
   if (result.exceptionDetails) {
     const detail = result.exceptionDetails.exception?.description || result.exceptionDetails.text;
     throw new Error('page error: ' + detail);
@@ -278,14 +308,16 @@ export async function newPageSession(cdp, url) {
   // wait for the real page: readyState complete AND navigated away from about:blank
   const hrefPrefix = new URL(url).origin + new URL(url).pathname;
   const deadline = Date.now() + 30000;
+  let loaded = false;
   while (Date.now() < deadline) {
     const ready = await evalJs(
       (m, p) => cdp.send(m, p, sessionId),
       'document.readyState === "complete" && location.href.startsWith(' + JSON.stringify(hrefPrefix) + ')',
     ).catch(() => false);
-    if (ready) break;
+    if (ready) { loaded = true; break; }
     await new Promise((r) => setTimeout(r, 100));
   }
+  if (!loaded) throw new Error('Timed out loading renderer page');
   // small settle delay for scripts executed at load
   await new Promise((r) => setTimeout(r, 300));
   return { targetId, sessionId };

@@ -18,7 +18,8 @@ import { encodePng } from './png.mjs';
 import { loadManifest, findCharacter, downloadCharacter } from './download.mjs';
 import { fetchCharacterFromPrts, listSkinsFromPrts } from './prts.mjs';
 import { prepareUpscaledAssets } from './upscale.mjs';
-import { ensureFfmpeg, renderMp4, ffmpegVersion, createMp4Writer } from './ffmpeg.mjs';
+import { ensureFfmpeg, ffmpegVersion, createMp4Writer } from './ffmpeg.mjs';
+import { withExportFile } from './export-file.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -405,10 +406,10 @@ async function cmdRun(args) {
   if (wantPng || wantMp4) {
     const pngDir = wantPng ? stem + '-frames' : null;
     if (pngDir) fs.mkdirSync(pngDir, { recursive: true });
-    let mp4Writer = null;
-    let mp4File = null;
+    let ffmpeg;
+    let bg;
+    const mp4File = stem + '.mp4';
     if (wantMp4) {
-      let ffmpeg;
       if (args.ffmpeg) {
         const version = ffmpegVersion(path.resolve(args.ffmpeg));
         if (!version) throw new Error(`--ffmpeg 指定的程序无法运行: ${args.ffmpeg}`);
@@ -429,45 +430,50 @@ async function cmdRun(args) {
       }
       // MP4 无透明通道：使用背景色的 RGB 通道合成（默认 00000000 -> 黑色底）
       const bgMatch = String(background).replace('#', '').match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i);
-      const bg = bgMatch ? [parseInt(bgMatch[1], 16), parseInt(bgMatch[2], 16), parseInt(bgMatch[3], 16)] : [255, 255, 255];
-      mp4File = stem + '.mp4';
+      bg = bgMatch ? [parseInt(bgMatch[1], 16), parseInt(bgMatch[2], 16), parseInt(bgMatch[3], 16)] : [255, 255, 255];
       console.log(`[mp4] 合成背景 RGB(${bg.join(',')}) 并编码 ...`);
-      mp4Writer = createMp4Writer({ width, height, fps, outFile: mp4File, background: bg, ffmpegPath: ffmpeg.path });
     }
-    try {
-      const result = await renderFramesToPng({
-        rootDir: root,
-        assets: { skel: relAsset(renderAssets.skel), atlas: relAsset(renderAssets.atlas), png: relAsset(renderAssets.png) },
-        assetsList: renderAssetsList ? renderAssetsList.map((a) => ({ name: a.name, skel: relAsset(a.skel), atlas: relAsset(a.atlas), png: relAsset(a.png) })) : undefined,
-        timeline: plan,
-        width,
-        height,
-        fps,
-        background,
-        mix,
-        camMode,
-        fit,
-        onFrame: async (rgba, idx, n) => {
-          if (pngDir) fs.writeFileSync(path.join(pngDir, `frame-${String(idx - 1).padStart(4, '0')}.png`), encodePng(rgba, width, height));
-          if (mp4Writer) await mp4Writer.write(rgba);
-          if (idx % Math.max(1, Math.round(n / 10)) === 0 || idx === n) console.log(`  [frames] ${idx}/${n}`);
-        },
+    const render = (mp4Writer) => renderFramesToPng({
+      rootDir: root,
+      assets: { skel: relAsset(renderAssets.skel), atlas: relAsset(renderAssets.atlas), png: relAsset(renderAssets.png) },
+      assetsList: renderAssetsList ? renderAssetsList.map((a) => ({ name: a.name, skel: relAsset(a.skel), atlas: relAsset(a.atlas), png: relAsset(a.png) })) : undefined,
+      timeline: plan,
+      width,
+      height,
+      fps,
+      background,
+      mix,
+      camMode,
+      fit,
+      onFrame: async (rgba, idx, n) => {
+        if (pngDir) fs.writeFileSync(path.join(pngDir, `frame-${String(idx - 1).padStart(4, '0')}.png`), encodePng(rgba, width, height));
+        if (mp4Writer) await mp4Writer.write(rgba);
+        if (idx % Math.max(1, Math.round(n / 10)) === 0 || idx === n) console.log(`  [frames] ${idx}/${n}`);
+      },
+    });
+    let result;
+    if (wantMp4) {
+      result = await withExportFile(mp4File, async (temporary) => {
+        const writer = createMp4Writer({ width, height, fps, outFile: temporary, background: bg, ffmpegPath: ffmpeg.path });
+        try {
+          const rendered = await render(writer);
+          await writer.end();
+          return rendered;
+        } catch (error) {
+          await writer.abort();
+          throw error;
+        }
       });
-      if (pngDir) {
-        console.log(`[done] ${pngDir} (${result.frames} 张 PNG)`);
-        outputs.push(pngDir);
-      }
-      if (mp4Writer) {
-        await mp4Writer.end();
-        const sizeKb = (fs.statSync(mp4File).size / 1024).toFixed(1);
-        console.log(`[done] ${mp4File} (${sizeKb} KB)`);
-        outputs.push(mp4File);
-      }
-    } catch (err) {
-      // never leave a half-fed ffmpeg hanging on stdin
-      if (mp4Writer) { try { mp4Writer.abort(); } catch {} }
-      throw err;
+      const sizeKb = (fs.statSync(mp4File).size / 1024).toFixed(1);
+      console.log(`[done] ${mp4File} (${sizeKb} KB)`);
+    } else {
+      result = await render();
     }
+    if (pngDir) {
+      console.log(`[done] ${pngDir} (${result.frames} 张 PNG)`);
+      outputs.push(pngDir);
+    }
+    if (wantMp4) outputs.push(mp4File);
   }
   return outputs;
 }
@@ -476,10 +482,10 @@ async function cmdRun(args) {
 // renderer (renderTimelineFrames), which calls onFrame with straight-alpha
 // RGBA for every frame.
 import { renderTimelineFrames } from './render.mjs';
-async function renderFramesToPng({ rootDir, assets, assetsList, timeline, width, height, fps, background = '00000000', mix = 0.2, chromePath, onFrame }) {
+async function renderFramesToPng({ rootDir, assets, assetsList, timeline, width, height, fps, background = '00000000', mix = 0.2, camMode, fit, chromePath, onFrame }) {
   const { straightenRgba } = await import('./gif.mjs');
   return renderTimelineFrames({
-    rootDir, assets, assetsList, timeline, width, height, fps, background, mix, chromePath,
+    rootDir, assets, assetsList, timeline, width, height, fps, background, mix, camMode, fit, chromePath,
     // frames arrive premultiplied (WebGL readPixels); PNG/MP4 need straight alpha
     onFrame: async (rgba, idx, n, action) => {
       await onFrame(straightenRgba(rgba, width, height), idx, n, action);

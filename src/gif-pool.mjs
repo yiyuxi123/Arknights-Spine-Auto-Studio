@@ -27,14 +27,19 @@ export class GifWorkerPool {
         }
         this._next(w);
       });
-      w.on('error', (e) => {
+      const onFailure = (error) => {
         const task = w._busy;
         w._busy = null;
-        if (task) task.reject(e);
+        if (task) task.reject(error);
         const idx = this.workers.indexOf(w);
         if (idx >= 0) this.workers.splice(idx, 1);
-        try { w.terminate(); } catch {}
-      });
+        this.idle = this.idle.filter(worker => worker !== w);
+        if (!this.workers.length) {
+          for (const queued of this.waiting.splice(0)) queued.reject(error);
+        }
+      };
+      w.on('error', onFailure);
+      w.on('exit', code => onFailure(new Error('GIF worker exited with code ' + code)));
       this.workers.push(w);
       this.idle.push(w);
     }
@@ -79,7 +84,13 @@ export class GifWorkerPool {
     });
   }
   close() {
-    for (const w of this.workers) { try { w.terminate(); } catch {} }
+    const error = new Error('GIF worker pool closed');
+    for (const task of this.waiting) task.reject(error);
+    for (const w of this.workers) {
+      w._busy?.reject(error);
+      w._busy = null;
+      w.terminate().catch(() => {});
+    }
     this.workers = [];
     this.idle = [];
     this.waiting = [];
