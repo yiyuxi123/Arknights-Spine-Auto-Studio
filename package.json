@@ -1,6 +1,6 @@
 {
   "name": "arknights-spine-auto-studio",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "private": true,
   "type": "module",
   "description": "Arknights Spine Auto-Studio: natural language to Arknights character animation (GIF/MP4) via Spine 3.8 + headless Chrome, zero dependencies",
@@ -15,7 +15,8 @@
     "run:hi": "node src/pipeline.mjs run --prompt \"睡觉，然后起来挥手\" --skel assets/amiya/amiya.skel --mock --upscale 2 --sr",
     "upscale": "node src/pipeline.mjs upscale --atlas assets/amiya/amiya.atlas --png assets/amiya/amiya.png --scale 2",
     "test": "node test/skel-roundtrip.mjs && node test/codecs.mjs && node test/align.mjs && node test/upscale.mjs && node test/compare.mjs && node test/zip.mjs && node test/prts.mjs && node test/gif-transparency.mjs && node test/slice.mjs",
-    "test:multiview": "node test/multiview-render.mjs"
+    "test:multiview": "node test/multiview-render.mjs",
+    "test:export": "node test/long-export.mjs"
   },
   "license": "MIT"
 }

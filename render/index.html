@@ -379,9 +379,7 @@
       for (var i = 0; i < list.length; i++) {
         r = this.step(list[i]);
         if (!r || !r.ok) return { ok: false, error: 'step failed at ' + i + (r && r.error ? ': ' + r.error : '') };
-        var pixels = new Uint8Array(size);
-        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-        total.set(pixels, i * size);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, total.subarray(i * size, (i + 1) * size));
       }
       var resp = await fetch(location.origin + '/frame?batch=' + params.batch + '&count=' + list.length, {
         method: 'POST',

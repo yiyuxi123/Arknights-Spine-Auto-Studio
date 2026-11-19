@@ -156,6 +156,15 @@ export function createMp4Writer({ width, height, fps, outFile, background = [255
   });
   const bgR = background[0], bgG = background[1], bgB = background[2];
   const rgb = Buffer.alloc(width * height * 3);
+  const completed = new Promise((resolve, reject) => {
+    proc.once('error', reject);
+    proc.once('close', (code) => {
+      if (code !== 0) reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-1200)}`));
+      else resolve(outFile);
+    });
+  });
+  completed.catch(() => {}); // may fail before the first frame
+  proc.stdin.on('error', () => {}); // reported via write callback/process exit
   let ended = false;
   return {
     write(rgba) {
@@ -167,31 +176,23 @@ export function createMp4Writer({ width, height, fps, outFile, background = [255
         rgb[j + 1] = Math.round(rgba[i + 1] * a + bgG * inv);
         rgb[j + 2] = Math.round(rgba[i + 2] * a + bgB * inv);
       }
-      return new Promise((resolve) => {
-        if (!proc.stdin.write(rgb)) proc.stdin.once('drain', resolve);
-        else resolve();
+      // Wait until the buffer can safely be reused, including on encoder failure.
+      return new Promise((resolve, reject) => {
+        proc.stdin.write(rgb, error => error ? reject(error) : resolve());
       });
     },
     end() {
-      if (ended) return Promise.resolve(outFile);
-      ended = true;
-      proc.stdin.end();
-      return new Promise((resolve, reject) => {
-        proc.on('close', (code) => {
-          if (code !== 0) reject(new Error(`ffmpeg exited with code ${code}: ${stderr.slice(-1200)}`));
-          else resolve(outFile);
-        });
-        proc.on('error', reject);
-      });
+      if (!ended) {
+        ended = true;
+        proc.stdin.end();
+      }
+      return completed;
     },
-    // kill the encoder and drop the partial file (used when the frame source
-    // fails mid-render; otherwise ffmpeg would hang waiting on stdin forever)
-    abort() {
-      if (ended) return;
+    async abort() {
       ended = true;
-      try { proc.stdin.destroy(); } catch {}
-      try { proc.kill(); } catch {}
-      try { fs.rmSync(outFile, { force: true }); } catch {}
+      proc.stdin.destroy();
+      proc.kill();
+      await completed.catch(() => {});
     },
   };
 }

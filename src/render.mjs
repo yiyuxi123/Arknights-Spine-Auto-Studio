@@ -3,11 +3,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { withExportFile } from './export-file.mjs';
 import { startStaticServer, launchChrome, CdpClient, evalJs, newPageSession, rmrfRetry } from './cdp.mjs';
 import { GifWorkerPool } from './gif-pool.mjs';
-import { buildGifHeader, buildGifFrame, gifTrailer, medianCut, quantize, lzwEncode } from './gif.mjs';
+import { buildGifHeader, buildGifFrame, gifTrailer, medianCut } from './gif.mjs';
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const MiB = 1024 * 1024;
+const MAX_BATCH_BYTES = 16 * MiB;
+const MAX_GIF_RAW_BYTES = 128 * MiB;
+
+function dimensionsInBytes(width, height) {
+  const size = width * height * 4;
+  if (![width, height, size].every(Number.isSafeInteger) || width < 1 || height < 1) {
+    throw new Error('Invalid render dimensions');
+  }
+  return size;
+}
 
 // ---------------------------------------------------------------------------
 // Shared timeline renderer: segments the timeline into parallel chunks, each
@@ -22,7 +33,6 @@ export async function renderTimelineFrames({
   assets,
   assetsList,
   timeline,
-  outFile = null,
   width = 640,
   height = 640,
   fps = 30,
@@ -36,22 +46,34 @@ export async function renderTimelineFrames({
   if (!timeline || !Array.isArray(timeline.timeline) || timeline.timeline.length === 0) {
     throw new Error('timeline must contain a non-empty timeline array');
   }
-  const pendingBatches = new Map(); // batchId -> Buffer[]
-  const batchWaiters = new Map(); // batchId -> resolve
-  const server = await startStaticServer(rootDir, { onPost: (pathname, body, res, url) => {
-    if (pathname === '/frame') {
-      const id = Number(url.searchParams.get('batch'));
-      const count = Number(url.searchParams.get('count'));
-      const size = width * height * 4;
-      const pieces = [];
-      for (let i = 0; i < count; i++) pieces.push(Buffer.from(body.subarray(i * size, (i + 1) * size))); // copy: independent transferable buffers
-      pendingBatches.set(id, pieces);
-      const w = batchWaiters.get(id);
-      if (w) { batchWaiters.delete(id); w(pieces); }
-      try { res.writeHead(200); res.end('ok'); } catch {}
+  const frameBytes = dimensionsInBytes(width, height);
+  const batchSize = Math.max(1, Math.min(8, Math.floor(MAX_BATCH_BYTES / frameBytes)));
+  const expectedBatches = new Map();
+  const server = await startStaticServer(rootDir, { onPost: async (pathname, req, res, url) => {
+    const id = Number(url.searchParams.get('batch'));
+    const batch = pathname === '/frame' && expectedBatches.get(id);
+    if (!batch || batch.receiving || Number(url.searchParams.get('count')) !== batch.count) {
+      req.resume();
+      res.writeHead(400).end('Unexpected frame batch');
       return;
     }
-    try { res.writeHead(404); res.end('not found'); } catch {}
+    batch.receiving = true;
+    const length = batch.count * frameBytes;
+    const frames = Array.from({ length: batch.count }, () => Buffer.allocUnsafeSlow(frameBytes));
+    let offset = 0;
+    for await (const chunk of req) {
+      if (offset + chunk.length > length) throw new Error('Oversized frame batch');
+      for (let start = 0; start < chunk.length;) {
+        const position = offset % frameBytes;
+        const end = Math.min(start + frameBytes - position, chunk.length);
+        chunk.copy(frames[Math.floor(offset / frameBytes)], position, start, end);
+        offset += end - start;
+        start = end;
+      }
+    }
+    if (offset !== length) throw new Error('Incomplete frame batch');
+    batch.frames = frames;
+    res.writeHead(200).end('ok');
   } });
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spine-studio-'));
   const chrome = launchChrome({ chromePath, userDataDir, width, height });
@@ -95,7 +117,6 @@ export async function renderTimelineFrames({
     const segDuration = (seg) => (seg.duration || 0) * Math.max(1, parseInt(seg.repeat, 10) || 1);
     const total = segments.reduce((sum, seg) => sum + segDuration(seg), 0);
     const frameCount = Math.max(1, Math.round(total * fps));
-    const pool = new GifWorkerPool(Math.max(2, Math.min(8, (os.cpus?.() || [1, 2, 3, 4]).length - 1)));
 
     const segStateAt = (t) => {
       let segIndex = 0, segmentStart = 0;
@@ -110,93 +131,82 @@ export async function renderTimelineFrames({
       return { seg, segIndex, segmentStart, repeatN, cycleDur, cycle };
     };
 
-    let batchSeq = 1;
-    const waitBatch = (id, count) => new Promise((resolve) => {
-      const got = pendingBatches.get(id);
-      if (got && got.length === count) { pendingBatches.delete(id); resolve(got); return; }
-      batchWaiters.set(id, resolve);
-    });
-
-    // Parallel chunks finish in arbitrary order: buffer frames and hand them
-    // to onFrame strictly by frame number so GIF/MP4/PNG stay in order.
-    let nextFrame = 0;
-    const pendingFrames = new Map();
-    const deliver = async () => {
-      while (pendingFrames.has(nextFrame)) {
-        const raw = pendingFrames.get(nextFrame);
-        pendingFrames.delete(nextFrame);
-        const st = segStateAt(nextFrame / fps);
-        await onFrame(raw, nextFrame + 1, frameCount, (st.seg || {}).action);
-        nextFrame++;
-      }
-    };
-
-    async function renderRange(send2, fromFrame, toFrame) {
-      const params = [];
-      for (let f = fromFrame; f < toFrame; f++) {
-        const st = segStateAt(f / fps);
-        params.push({ action: st.seg.action, view: st.seg.view || 'default', loop: st.seg.loop, delta: 1 / fps, timeScale: st.seg.timeScale || 1, restart: false });
-      }
-      const BATCH = 8;
-      for (let b = 0; b < params.length; b += BATCH) {
-        const batch = params.slice(b, b + BATCH);
-        const id = batchSeq++;
-        const res = await evalJs(send2, 'studio.renderFrames(' + JSON.stringify({ frames: batch, batch: id }) + ')');
-        if (!res || !res.ok) throw new Error('renderFrames failed: ' + (res && res.error || 'unknown'));
-        if (res.fallback) console.warn('  [warn] 动作不存在，已替换为 ' + res.action);
-        const frames = await waitBatch(id, batch.length);
-        for (let i = 0; i < frames.length; i++) {
-          pendingFrames.set(fromFrame + b + i, frames[i]);
-        }
-        await deliver();
-      }
-    }
-
-    // adaptive chunking: parallel pages pay a fixed load cost, so short
-    // renders use fewer chunks (env ZDXR_RENDER_CHUNKS overrides)
     const envChunks = parseInt(process.env.ZDXR_RENDER_CHUNKS || '0', 10) || 0;
-    const autoChunks = frameCount < 60 ? 1 : frameCount < 180 ? 2 : frameCount < 360 ? 3 : 4;
-    const chunkCount = Math.max(1, Math.min(envChunks || autoChunks, frameCount === 1 ? 1 : Math.ceil(frameCount / 15)));
+    const autoChunks = width * height > 2_000_000 || frameCount < 60 ? 1
+      : frameCount < 180 ? 2 : frameCount < 360 ? 3 : 4;
+    const chunkCount = Math.max(1, Math.min(envChunks || autoChunks, 4, Math.ceil(frameCount / 15)));
     const perChunk = Math.ceil(frameCount / chunkCount);
-    const chunks2 = [];
-    for (let c = 0; c < chunkCount; c++) {
-      const from = c * perChunk;
-      const to = Math.min(frameCount, (c + 1) * perChunk);
-      if (from >= to) continue;
-      chunks2.push({ from, to });
-    }
-    const runChunk = async ({ from, to }) => {
-      const { sessionId: sid } = await newPageSession(cdp, pageUrl);
-      const send2 = (m, p) => cdp.send(m, p, sid);
-      await evalJs(send2, 'studio.load()');
-      if (from === 0) {
-        // frame 0: exact t=0 pose (restart + delta 0), own batch
-        const st0 = segStateAt(0);
-        const id0 = batchSeq++;
-        const res0 = await evalJs(send2, 'studio.renderFrames(' + JSON.stringify({ batch: id0, frames: [{ action: st0.seg.action, view: st0.seg.view || 'default', loop: st0.seg.loop, delta: 0, timeScale: st0.seg.timeScale || 1, restart: true }] }) + ')');
-        if (!res0 || !res0.ok) throw new Error('frame0 failed: ' + (res0 && res0.error || 'unknown'));
-        const f0 = (await waitBatch(id0, 1))[0];
-        pendingFrames.set(0, f0);
-        await deliver();
-        await renderRange(send2, 1, to);
-      } else {
-        // Replay every step from t=0 (no snapshots) so animation switches,
-        // mix transitions and loop cycles build exactly like a single-chunk
-        // run. A big-delta jump would skip the mix source track and shift
-        // poses around chunk boundaries.
-        const endFrame = Math.max(0, Math.floor(((from - 1) / fps) * fps + 1e-9));
-        const advanceParams = [];
-        for (let f = 0; f <= endFrame; f++) {
-          const st = segStateAt(f / fps);
-          advanceParams.push({ action: st.seg.action, view: st.seg.view || 'default', loop: st.seg.loop, delta: 1 / fps, timeScale: st.seg.timeScale || 1, restart: false });
-        }
-        await evalJs(send2, 'studio.stepMany(' + JSON.stringify({ frames: advanceParams }) + ')');
-        await renderRange(send2, from, to);
-      }
+    const stepAt = (frame) => {
+      const { seg } = segStateAt(frame / fps);
+      return {
+        action: seg.action, view: seg.view || 'default', loop: seg.loop,
+        delta: frame === 0 ? 0 : 1 / fps, timeScale: seg.timeScale || 1, restart: frame === 0,
+      };
     };
-    await Promise.all(chunks2.map(runChunk));
-    await deliver();
-    pool.close();
+    let batchSeq = 0;
+
+    async function* renderChunk(from, to, sendPage = send) {
+      let targetId;
+      try {
+        if (from > 0) {
+          const page = await newPageSession(cdp, pageUrl);
+          targetId = page.targetId;
+          sendPage = (method, params) => cdp.send(method, params, page.sessionId);
+          const loaded = await evalJs(sendPage, 'studio.load()');
+          if (!loaded?.ok) throw new Error('studio.load failed: ' + loaded?.error);
+          // Replay from the exact first pose, in bounded steps. No frame pixels
+          // leave the page until it reaches the start of its own range.
+          for (let first = 0; first < from; first += 128) {
+            const frames = Array.from({ length: Math.min(128, from - first) }, (_, i) => stepAt(first + i));
+            const replay = await evalJs(sendPage, 'studio.stepMany(' + JSON.stringify({ frames }) + ')');
+            if (!replay?.ok) throw new Error('Frame replay failed: ' + replay?.error);
+          }
+        }
+        for (let first = from; first < to; first += batchSize) {
+          const count = Math.min(batchSize, to - first);
+          const frames = Array.from({ length: count }, (_, i) => stepAt(first + i));
+          const id = ++batchSeq;
+          const batch = { count };
+          expectedBatches.set(id, batch);
+          try {
+            const result = await evalJs(sendPage, 'studio.renderFrames(' + JSON.stringify({ frames, batch: id }) + ')');
+            if (!result?.ok || !batch.frames) throw new Error('Frame batch failed: ' + (result?.error || 'no frame data'));
+            if (result.fallback) console.warn('  [warn] 动作不存在，已替换为 ' + result.action);
+          } finally {
+            expectedBatches.delete(id);
+          }
+          yield { first, frames: batch.frames };
+        }
+      } finally {
+        if (targetId) await cdp.send('Target.closeTarget', { targetId }).catch(() => {});
+      }
+    }
+
+    // A generator can have at most one request or one batch queued per page.
+    // Only this loop writes frames, so a slow sink pauses all production
+    // without letting later chunks block the next frame.
+    const chunks = [];
+    for (let from = 0; from < frameCount; from += perChunk) {
+      const stream = renderChunk(from, Math.min(frameCount, from + perChunk));
+      const firstBatch = stream.next();
+      firstBatch.catch(() => {}); // held until this chunk reaches the writer
+      chunks.push({ stream, firstBatch });
+    }
+    try {
+      for (const { stream, firstBatch } of chunks) {
+        for (let batch = await firstBatch; !batch.done; batch = await stream.next()) {
+          const { first, frames } = batch.value;
+          for (let i = 0; i < frames.length; i++) {
+            const raw = frames[i];
+            frames[i] = null;
+            await onFrame(raw, first + i + 1, frameCount, stepAt(first + i).action);
+          }
+        }
+      }
+    } finally {
+      cdp.close();
+      await Promise.allSettled(chunks.map(({ stream }) => stream.return()));
+    }
     return { frames: frameCount, seconds: total, fps };
   } finally {
     try { cdp?.close?.(); } catch {}
@@ -211,52 +221,45 @@ export async function renderTimelineFrames({
 // every frame compressed on the worker pool, assembled in order.
 // ---------------------------------------------------------------------------
 export async function renderTimelineToGif(opts) {
-  const { width = 640, height = 640, fps = 30 } = opts;
-  const pool = new GifWorkerPool(Math.max(2, Math.min(8, (os.cpus?.() || [1, 2, 3, 4]).length - 1)));
+  const { width = 640, height = 640, fps = 30, outFile } = opts;
+  const frameBytes = dimensionsInBytes(width, height);
+  const window = Math.max(1, Math.min(16, Math.floor(MAX_GIF_RAW_BYTES / frameBytes)));
+  const workerCount = Math.max(1, Math.min(window, 8, (os.cpus().length || 2) - 1));
   const delay = Math.max(1, Math.round(100 / fps));
-  let palette = null;
-  const userOnFrame = opts.onFrame;
-  // Backpressured streaming GIF writer: at most MAX_INFLIGHT encodes are in
-  // flight (bounded memory), finished frames are written to disk in order.
-  const MAX_INFLIGHT = 256; // compressed frames are small (~0.25MB); a wide window keeps render/encode overlapped
-  const inFlight = new Map(); // 1-based frame idx -> encode promise
-  let nextToWrite = 1;
-  let headerWritten = false;
-  const writeStream = fs.createWriteStream(opts.outFile);
-  const streamError = new Promise((resolve) => writeStream.on('error', resolve));
-  const writeChunk = (buf) => new Promise((resolve) => {
-    if (!writeStream.write(buf)) writeStream.once('drain', resolve);
-    else resolve();
-  });
-  const flush = async () => {
-    while (inFlight.has(nextToWrite)) {
-      const compressed = await inFlight.get(nextToWrite);
-      inFlight.delete(nextToWrite);
-      if (!headerWritten) {
-        await writeChunk(buildGifHeader(width, height, palette));
-        headerWritten = true;
-      }
-      await writeChunk(buildGifFrame(compressed, width, height, delay));
-      nextToWrite++;
+
+  const result = await withExportFile(outFile, async (temporary) => {
+    const file = await fs.promises.open(temporary, 'wx');
+    const pool = new GifWorkerPool(workerCount);
+    const pending = [];
+    let palette;
+    const writeNext = async () => {
+      const { compressed, error } = await pending.shift();
+      if (error) throw error;
+      await file.writeFile(buildGifFrame(compressed, width, height, delay));
+    };
+
+    try {
+      const rendered = await renderTimelineFrames({
+        ...opts,
+        onFrame: async (rgba, idx, total, action) => {
+          if (!palette) {
+            palette = medianCut(rgba, width, height, 256);
+            await file.writeFile(buildGifHeader(width, height, palette));
+          }
+          pending.push(pool.encode(rgba, width, height, palette).then(
+            compressed => ({ compressed }), error => ({ error }),
+          ));
+          if (pending.length >= window) await writeNext();
+          if (opts.onFrame) await opts.onFrame(idx, total, action);
+        },
+      });
+      while (pending.length) await writeNext();
+      await file.writeFile(gifTrailer());
+      return rendered;
+    } finally {
+      pool.close();
+      await file.close();
     }
-  };
-  const result = await renderTimelineFrames({
-    ...opts,
-    onFrame: async (rgba, idx, total, action) => {
-      // frames arrive in order; submit without awaiting so all workers stay
-      // busy, but cap the in-flight window for bounded memory
-      if (!palette) palette = medianCut(rgba, width, height, 256);
-      inFlight.set(idx, pool.encode(rgba, width, height, palette));
-      await flush();
-      while (inFlight.size > MAX_INFLIGHT) await flush();
-      if (userOnFrame) await userOnFrame(idx, total, action);
-    },
   });
-  await flush();
-  await writeChunk(gifTrailer());
-  await new Promise((resolve) => writeStream.end(resolve));
-  pool.close();
-  const err = await Promise.race([streamError, Promise.resolve(null)]);
-  if (err) throw err;
-  return { frames: result.frames, seconds: result.seconds, fps, outFile: opts.outFile, bytes: fs.statSync(opts.outFile).size };
+  return { ...result, outFile, bytes: fs.statSync(outFile).size };
 }
